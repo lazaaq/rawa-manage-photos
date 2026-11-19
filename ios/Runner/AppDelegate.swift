@@ -158,40 +158,8 @@ final class RawConverterPlugin: NSObject, FlutterPlugin {
     try writeResource(res, to: rawURL)
     let inBytes = (try? rawURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
 
-    // Metadata asli (EXIF, GPS, TIFF, ...).
-    var props: [String: Any] = [:]
-    if let src = CGImageSourceCreateWithURL(rawURL as CFURL, nil),
-      let p = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [String: Any]
-    {
-      props = p
-    }
-
-    // Decode RAW. CIRAWFilter sudah menerapkan orientasi.
-    var image: CIImage?
-    if let f = CIRAWFilter(imageURL: rawURL) {
-      let native = f.nativeSize
-      let long = max(native.width, native.height)
-      if maxSide > 0, long > CGFloat(maxSide) {
-        f.scaleFactor = Float(CGFloat(maxSide) / long)
-      }
-      image = f.outputImage
-    }
-    if image == nil, let ci = CIImage(contentsOf: rawURL, options: [.applyOrientationProperty: true]) {
-      image = scaled(ci, maxSide: maxSide)
-    }
-    guard let img = image else { throw ConvertError("Format RAW tidak didukung perangkat") }
-
-    let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
-    guard let cg = ciContext.createCGImage(img, from: img.extent.integral, format: .RGBA8, colorSpace: srgb)
-    else { throw ConvertError("Gagal merender gambar") }
-
-    // Encode JPEG.
-    guard let dest = CGImageDestinationCreateWithURL(
-      jpgURL as CFURL, UTType.jpeg.identifier as CFString, 1, nil)
-    else { throw ConvertError("Gagal membuat JPEG") }
-    CGImageDestinationAddImage(dest, cg, jpegProperties(from: props, quality: quality) as CFDictionary)
-    guard CGImageDestinationFinalize(dest) else { throw ConvertError("Gagal menulis JPEG") }
-    let outBytes = (try? jpgURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+    let outBytes = try RawJpegEncoder.encode(
+      rawURL: rawURL, to: jpgURL, quality: quality, maxSide: maxSide, context: ciContext)
 
     // Simpan ke Photos dengan tanggal, lokasi, favorit yang sama.
     let base = (res.originalFilename as NSString).deletingPathExtension
@@ -208,41 +176,5 @@ final class RawConverterPlugin: NSObject, FlutterPlugin {
     }
 
     return ["newId": newId ?? "", "inBytes": inBytes, "outBytes": outBytes]
-  }
-
-  private func scaled(_ img: CIImage, maxSide: Int) -> CIImage {
-    let long = max(img.extent.width, img.extent.height)
-    guard maxSide > 0, long > CGFloat(maxSide) else { return img }
-    let f = CIFilter(name: "CILanczosScaleTransform")!
-    f.setValue(img, forKey: kCIInputImageKey)
-    f.setValue(CGFloat(maxSide) / long, forKey: kCIInputScaleKey)
-    f.setValue(1.0, forKey: kCIInputAspectRatioKey)
-    return f.outputImage ?? img
-  }
-
-  private func jpegProperties(from src: [String: Any], quality: Int) -> [String: Any] {
-    var out: [String: Any] = [:]
-    let keep: [CFString] = [
-      kCGImagePropertyExifDictionary, kCGImagePropertyExifAuxDictionary,
-      kCGImagePropertyGPSDictionary, kCGImagePropertyTIFFDictionary,
-      kCGImagePropertyIPTCDictionary,
-    ]
-    for k in keep {
-      if let v = src[k as String] { out[k as String] = v }
-    }
-    // Pixel sudah diputar oleh decoder -> orientasi normal.
-    out[kCGImagePropertyOrientation as String] = 1
-    if var tiff = out[kCGImagePropertyTIFFDictionary as String] as? [String: Any] {
-      tiff[kCGImagePropertyTIFFOrientation as String] = 1
-      out[kCGImagePropertyTIFFDictionary as String] = tiff
-    }
-    if var exif = out[kCGImagePropertyExifDictionary as String] as? [String: Any] {
-      exif.removeValue(forKey: kCGImagePropertyExifPixelXDimension as String)
-      exif.removeValue(forKey: kCGImagePropertyExifPixelYDimension as String)
-      out[kCGImagePropertyExifDictionary as String] = exif
-    }
-    out[kCGImageDestinationLossyCompressionQuality as String] =
-      Double(min(max(quality, 1), 100)) / 100.0
-    return out
   }
 }

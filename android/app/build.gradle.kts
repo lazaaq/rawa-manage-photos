@@ -29,6 +29,13 @@ android {
         versionName = flutter.versionName
     }
 
+    testOptions {
+        unitTests.all {
+            // Optional: folder with real .CR3 files for RealSamples tests (skipped when unset).
+            it.systemProperty("cr3.samples", System.getenv("CR3_SAMPLES_DIR") ?: "")
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.
@@ -50,4 +57,5 @@ flutter {
 
 dependencies {
     implementation("androidx.exifinterface:exifinterface:1.3.7")
+    testImplementation("junit:junit:4.13.2")
 }

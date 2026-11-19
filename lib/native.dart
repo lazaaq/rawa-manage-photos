@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// Satu foto RAW di galeri.
@@ -29,6 +30,12 @@ class ConvertResult {
 class RawNative {
   static const _ch = MethodChannel('raw_compressor/native');
 
+  /// Untuk test: paksa perilaku Android/non-Android. null = pakai platform asli.
+  @visibleForTesting
+  static bool? debugIsAndroid;
+
+  static bool get _isAndroid => debugIsAndroid ?? Platform.isAndroid;
+
   static Future<List<RawPhoto>> scanRaw() async {
     final list = await _ch.invokeListMethod<Map<dynamic, dynamic>>('scanRaw') ?? [];
     return list.map(RawPhoto.fromMap).toList();
@@ -50,7 +57,7 @@ class RawNative {
 
   /// Thumbnail dari native (Android), untuk file yang tidak dikenali galeri, mis. CR3.
   static Future<Uint8List?> thumbnail(String id, {int size = 300}) async {
-    if (!Platform.isAndroid) return null;
+    if (!_isAndroid) return null;
     try {
       return await _ch.invokeMethod<Uint8List>('thumbnail', {'id': id, 'size': size});
     } catch (_) {
@@ -61,7 +68,7 @@ class RawNative {
   /// Android 9: hapus langsung di native dan kembalikan id yang benar-benar terhapus.
   /// null = pakai photo_manager (iOS & Android 10+, dengan dialog konfirmasi sistem).
   static Future<List<String>?> deleteLegacy(List<String> ids) async {
-    if (!Platform.isAndroid) return null;
+    if (!_isAndroid) return null;
     return _ch.invokeListMethod<String>('deleteLegacy', {'ids': ids});
   }
 }

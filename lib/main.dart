@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'home_page.dart';
+import 'landing_page.dart';
 
 void main() => runApp(const RawCompressorApp());
 
@@ -11,11 +11,11 @@ class RawCompressorApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final seed = Colors.teal;
     return MaterialApp(
-      title: 'RAW Compressor',
+      title: 'rawa',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(colorSchemeSeed: seed, useMaterial3: true),
       darkTheme: ThemeData(colorSchemeSeed: seed, brightness: Brightness.dark, useMaterial3: true),
-      home: const HomePage(),
+      home: const LandingPage(),
     );
   }
 }

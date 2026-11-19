@@ -15,14 +15,14 @@ const kSizeOptions = <int, String>{
   2048: '2048 px',
 };
 
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+class CompressPage extends StatefulWidget {
+  const CompressPage({super.key});
 
   @override
-  State<HomePage> createState() => _HomePageState();
+  State<CompressPage> createState() => _CompressPageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _CompressPageState extends State<CompressPage> {
   PermissionState? _perm;
   bool _loading = true;
   String? _error;

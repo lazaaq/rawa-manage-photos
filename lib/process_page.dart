@@ -32,7 +32,7 @@ class _ProcessPageState extends State<ProcessPage> {
   bool _cancel = false;
 
   final List<RawPhoto> _ok = [];
-  final Map<String, String> _failed = {}; // nama -> error
+  final List<({String name, String error})> _failed = [];
   int _inBytes = 0;
   int _outBytes = 0;
   int _deleted = 0;
@@ -53,9 +53,9 @@ class _ProcessPageState extends State<ProcessPage> {
         _inBytes += r.inBytes > 0 ? r.inBytes : p.size;
         _outBytes += r.outBytes;
       } on PlatformException catch (e) {
-        _failed[p.name] = e.message ?? e.code;
+        _failed.add((name: p.name, error: e.message ?? e.code));
       } catch (e) {
-        _failed[p.name] = '$e';
+        _failed.add((name: p.name, error: '$e'));
       }
       if (!mounted) return;
       setState(() => _index++);
@@ -98,7 +98,9 @@ class _ProcessPageState extends State<ProcessPage> {
                   ? 'Foto ${_index + 1} dari $total: ${widget.items[_index].name}'
                   : 'Menyelesaikan…',
               _Phase.deleting => 'Menghapus RAW asli… (konfirmasi di dialog sistem)',
-              _Phase.done => '$total foto diproses',
+              _Phase.done => _cancel && _index < total
+                  ? 'Dihentikan: $_index dari $total foto diproses'
+                  : '$total foto diproses',
             },
           ),
           const SizedBox(height: 24),
@@ -117,8 +119,8 @@ class _ProcessPageState extends State<ProcessPage> {
           if (_failed.isNotEmpty) ...[
             const SizedBox(height: 16),
             Text('Gagal dikonversi', style: Theme.of(context).textTheme.titleSmall),
-            for (final e in _failed.entries)
-              ListTile(dense: true, contentPadding: EdgeInsets.zero, title: Text(e.key), subtitle: Text(e.value)),
+            for (final f in _failed)
+              ListTile(dense: true, contentPadding: EdgeInsets.zero, title: Text(f.name), subtitle: Text(f.error)),
           ],
         ]),
         bottomNavigationBar: SafeArea(

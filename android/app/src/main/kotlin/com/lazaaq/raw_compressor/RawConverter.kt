@@ -6,6 +6,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
+import android.graphics.Matrix
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
@@ -213,19 +214,19 @@ class RawConverter(private val context: Context) : MethodChannel.MethodCallHandl
         val tmp = File(context.cacheDir, "${UUID.randomUUID()}.jpg")
         try {
             val exif: Map<String, String>?
-            val bitmap: Bitmap
-            var decoderRotated = false
+            var bitmap: Bitmap
             if (isCr3(src.name)) {
                 // CR3 tidak didukung decoder Android: pakai JPG resolusi penuh di dalamnya.
                 val (meta, jpeg) = readCr3(src)
                 bitmap = decodeBytes(jpeg, maxSide) ?: throw IllegalStateException("Gagal membaca JPG di dalam CR3")
-                exif = meta.exif
+                bitmap = applyOrientation(bitmap, meta.exif[ExifInterface.TAG_ORIENTATION]?.toIntOrNull() ?: 1)
+                exif = meta.exif + (ExifInterface.TAG_ORIENTATION to "1")
             } else {
                 val (bmp, rotated) = decode(src, maxSide)
-                bitmap = bmp
-                decoderRotated = rotated
+                bitmap = if (rotated) bmp else applyOrientation(bmp, sourceOrientation(src))
                 exif = null
             }
+            // Pixel sudah tegak: semua galeri menampilkan benar walau mengabaikan tag EXIF.
 
             tmp.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(1, 100), it) }
             val width = bitmap.width
@@ -235,7 +236,7 @@ class RawConverter(private val context: Context) : MethodChannel.MethodCallHandl
             if (exif != null) {
                 writeExif(tmp, exif, width, height)
             } else {
-                copyExif(src, tmp, width, height, keepOrientation = !decoderRotated)
+                copyExif(src, tmp, width, height)
             }
             val newId = insertJpeg(tmp, src)
             return mapOf("newId" to newId, "inBytes" to src.size, "outBytes" to tmp.length())
@@ -305,13 +306,39 @@ class RawConverter(private val context: Context) : MethodChannel.MethodCallHandl
         return scaled
     }
 
-    private fun copyExif(src: Source, jpg: File, width: Int, height: Int, keepOrientation: Boolean) {
+    private fun sourceOrientation(src: Source): Int = try {
+        openFd(src).use {
+            ExifInterface(it.fileDescriptor)
+                .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+        }
+    } catch (_: Throwable) {
+        ExifInterface.ORIENTATION_NORMAL
+    }
+
+    /** Putar/cerminkan pixel sesuai tag EXIF Orientation (1..8). */
+    private fun applyOrientation(bmp: Bitmap, orientation: Int): Bitmap {
+        val m = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> m.setScale(-1f, 1f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> m.setRotate(180f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> m.setScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> { m.setRotate(90f); m.postScale(-1f, 1f) }
+            ExifInterface.ORIENTATION_ROTATE_90 -> m.setRotate(90f)
+            ExifInterface.ORIENTATION_TRANSVERSE -> { m.setRotate(-90f); m.postScale(-1f, 1f) }
+            ExifInterface.ORIENTATION_ROTATE_270 -> m.setRotate(-90f)
+            else -> return bmp
+        }
+        val out = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+        if (out != bmp) bmp.recycle()
+        return out
+    }
+
+    private fun copyExif(src: Source, jpg: File, width: Int, height: Int) {
         try {
             val srcExif = openFd(src).use { ExifInterface(it.fileDescriptor) }
             val map = mutableMapOf<String, String>()
             for (tag in EXIF_TAGS) srcExif.getAttribute(tag)?.let { map[tag] = it }
-            map[ExifInterface.TAG_ORIENTATION] =
-                if (keepOrientation) srcExif.getAttribute(ExifInterface.TAG_ORIENTATION) ?: "1" else "1"
+            map[ExifInterface.TAG_ORIENTATION] = "1" // pixel sudah diputar
             writeExif(jpg, map, width, height)
         } catch (_: Throwable) {
             // Metadata opsional; gambar tetap tersimpan.
@@ -327,7 +354,7 @@ class RawConverter(private val context: Context) : MethodChannel.MethodCallHandl
             if (tags[ExifInterface.TAG_ORIENTATION] == null) dst.setAttribute(ExifInterface.TAG_ORIENTATION, "1")
             dst.setAttribute(ExifInterface.TAG_PIXEL_X_DIMENSION, width.toString())
             dst.setAttribute(ExifInterface.TAG_PIXEL_Y_DIMENSION, height.toString())
-            dst.setAttribute(ExifInterface.TAG_SOFTWARE, "RAW Compressor")
+            dst.setAttribute(ExifInterface.TAG_SOFTWARE, "rawa")
             dst.saveAttributes()
         } catch (_: Throwable) {
             // Metadata opsional; gambar tetap tersimpan.
@@ -339,7 +366,10 @@ class RawConverter(private val context: Context) : MethodChannel.MethodCallHandl
     private fun thumbnail(id: Long, size: Int): ByteArray? {
         val src = querySource(id)
         val bmp: Bitmap = if (isCr3(src.name)) {
-            decodeBytes(readCr3(src).second, size)
+            val (meta, jpeg) = readCr3(src)
+            decodeBytes(jpeg, size)?.let {
+                applyOrientation(it, meta.exif[ExifInterface.TAG_ORIENTATION]?.toIntOrNull() ?: 1)
+            }
         } else {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             openFd(src).use { BitmapFactory.decodeFileDescriptor(it.fileDescriptor, null, bounds) }
@@ -347,7 +377,8 @@ class RawConverter(private val context: Context) : MethodChannel.MethodCallHandl
             val opts = BitmapFactory.Options().apply {
                 inSampleSize = sampleFor(max(bounds.outWidth, bounds.outHeight), size)
             }
-            openFd(src).use { BitmapFactory.decodeFileDescriptor(it.fileDescriptor, null, opts) }?.let { fit(it, size) }
+            openFd(src).use { BitmapFactory.decodeFileDescriptor(it.fileDescriptor, null, opts) }
+                ?.let { applyOrientation(fit(it, size), sourceOrientation(src)) }
         } ?: return null
         val out = ByteArrayOutputStream()
         bmp.compress(Bitmap.CompressFormat.JPEG, 80, out)
@@ -390,7 +421,7 @@ class RawConverter(private val context: Context) : MethodChannel.MethodCallHandl
     @Suppress("DEPRECATION")
     private fun insertJpegLegacy(file: File, src: Source): String {
         val dir = src.dataPath?.let { File(it).parentFile }?.takeIf { it.canWrite() }
-            ?: File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "RAW Compressor")
+            ?: File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "rawa")
                 .apply { mkdirs() }
         val base = src.name.substringBeforeLast('.')
         var target = File(dir, "$base.jpg")
@@ -424,7 +455,7 @@ class RawConverter(private val context: Context) : MethodChannel.MethodCallHandl
         val cr = context.contentResolver
         // MediaStore hanya mengizinkan gambar baru di DCIM/ atau Pictures/.
         val rel = src.relativePath?.takeIf { it.startsWith("DCIM/") || it.startsWith("Pictures/") }
-            ?: "Pictures/RAW Compressor/"
+            ?: "Pictures/rawa/"
         val base = src.name.substringBeforeLast('.')
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, "$base.jpg")
