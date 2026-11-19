@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:photo_manager/photo_manager.dart';
 
+import 'jobs.dart';
 import 'native.dart';
 
 enum _Phase { converting, deleting, done }
@@ -16,6 +17,8 @@ class ProcessPage extends StatefulWidget {
     required this.maxSide,
     required this.deleteOriginal,
     this.target = SaveTarget.gallery,
+    this.job = PhotoJob.raw,
+    this.format = OutputFormat.same,
   });
 
   final List<RawPhoto> items;
@@ -23,6 +26,10 @@ class ProcessPage extends StatefulWidget {
   final int maxSide;
   final bool deleteOriginal;
   final SaveTarget target;
+  final PhotoJob job;
+
+  /// Format hasil untuk foto biasa (diabaikan untuk RAW).
+  final OutputFormat format;
 
   @override
   State<ProcessPage> createState() => _ProcessPageState();
@@ -34,6 +41,7 @@ class _ProcessPageState extends State<ProcessPage> {
   bool _cancel = false;
 
   final List<RawPhoto> _ok = [];
+  int _skipped = 0;
   final List<({String name, String error})> _failed = [];
   int _inBytes = 0;
   int _outBytes = 0;
@@ -55,10 +63,17 @@ class _ProcessPageState extends State<ProcessPage> {
           quality: widget.quality,
           maxSide: widget.maxSide,
           target: widget.target,
+          imageFormat: widget.job.isImage ? widget.format.name : null,
+          onlyIfSmaller: widget.job == PhotoJob.compress,
         );
-        _ok.add(p);
-        _inBytes += r.inBytes > 0 ? r.inBytes : p.size;
-        _outBytes += r.outBytes;
+        if (r.skipped) {
+          // Tidak ada file baru: asli dibiarkan, tidak dihitung hemat.
+          _skipped++;
+        } else {
+          _ok.add(p);
+          _inBytes += r.inBytes > 0 ? r.inBytes : p.size;
+          _outBytes += r.outBytes;
+        }
       } on PlatformException catch (e) {
         _failed.add((name: p.name, error: e.message ?? e.code));
       } catch (e) {
@@ -75,26 +90,30 @@ class _ProcessPageState extends State<ProcessPage> {
         final deleted = await RawNative.deleteLegacy(ids) ?? await PhotoManager.editor.deleteWithIds(ids);
         _deleted = deleted.length;
         if (_deleted < ids.length) {
-          _deleteError = '${ids.length - _deleted} RAW tidak dihapus (dibatalkan atau ditolak). '
-              'JPG hasil tetap tersimpan.';
+          _deleteError = '${ids.length - _deleted} ${widget.job.originalWord} tidak dihapus '
+              '(dibatalkan atau ditolak). $_resultWord hasil tetap tersimpan.';
         }
       } catch (e) {
-        _deleteError = 'Gagal menghapus RAW: $e';
+        _deleteError = 'Gagal menghapus ${widget.job.originalWord}: $e';
       }
     }
     if (mounted) setState(() => _phase = _Phase.done);
   }
 
+  /// Sebutan file hasil: "JPG" untuk RAW, "Foto" untuk lainnya.
+  String get _resultWord => widget.job == PhotoJob.raw ? 'JPG' : 'Foto';
+
   @override
   Widget build(BuildContext context) {
     final total = widget.items.length;
+    final raw = widget.job == PhotoJob.raw;
     final done = _phase == _Phase.done;
     return PopScope(
       canPop: done,
       child: Scaffold(
         appBar: AppBar(
           automaticallyImplyLeading: false,
-          title: Text(done ? 'Selesai' : 'Mengompres…'),
+          title: Text(done ? 'Selesai' : (widget.job == PhotoJob.convert ? 'Mengubah…' : 'Mengompres…')),
         ),
         body: ListView(padding: const EdgeInsets.all(20), children: [
           LinearProgressIndicator(value: total == 0 ? 1 : _index / total, minHeight: 8),
@@ -104,7 +123,7 @@ class _ProcessPageState extends State<ProcessPage> {
               _Phase.converting => _index < total
                   ? 'Foto ${_index + 1} dari $total: ${widget.items[_index].name}'
                   : 'Menyelesaikan…',
-              _Phase.deleting => 'Menghapus RAW asli… (konfirmasi di dialog sistem)',
+              _Phase.deleting => 'Menghapus ${widget.job.originalWord} asli… (konfirmasi di dialog sistem)',
               _Phase.done => _cancel && _index < total
                   ? 'Dihentikan: $_index dari $total foto diproses'
                   : '$total foto diproses',
@@ -113,19 +132,21 @@ class _ProcessPageState extends State<ProcessPage> {
           const SizedBox(height: 24),
           _stat('Berhasil', '${_ok.length}'),
           _stat('Gagal', '${_failed.length}'),
-          _stat('Ukuran RAW', formatBytes(_inBytes)),
-          _stat('Ukuran JPG', formatBytes(_outBytes)),
-          if (_inBytes > 0)
+          if (_skipped > 0) _stat('Dilewati (hasil tidak lebih kecil)', '$_skipped'),
+          _stat(raw ? 'Ukuran RAW' : 'Ukuran asli', formatBytes(_inBytes)),
+          _stat(raw ? 'Ukuran JPG' : 'Ukuran hasil', formatBytes(_outBytes)),
+          if (_inBytes > 0 && _outBytes <= _inBytes)
             _stat('Hemat', '${formatBytes(_inBytes - _outBytes)} '
                 '(${((1 - _outBytes / _inBytes) * 100).toStringAsFixed(0)}%)'),
-          if (widget.deleteOriginal && done) _stat('RAW dihapus', '$_deleted'),
+          if (_inBytes > 0 && _outBytes > _inBytes) _stat('Bertambah', formatBytes(_outBytes - _inBytes)),
+          if (widget.deleteOriginal && done) _stat(raw ? 'RAW dihapus' : 'Asli dihapus', '$_deleted'),
           if (_deleteError != null) ...[
             const SizedBox(height: 12),
             Text(_deleteError!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
           ],
           if (_failed.isNotEmpty) ...[
             const SizedBox(height: 16),
-            Text('Gagal dikonversi', style: Theme.of(context).textTheme.titleSmall),
+            Text(raw ? 'Gagal dikonversi' : 'Gagal diproses', style: Theme.of(context).textTheme.titleSmall),
             for (final f in _failed)
               ListTile(dense: true, contentPadding: EdgeInsets.zero, title: Text(f.name), subtitle: Text(f.error)),
           ],

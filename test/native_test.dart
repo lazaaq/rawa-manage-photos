@@ -86,6 +86,33 @@ void main() {
       expect(fake.callsOf('convert').map((c) => (c.arguments as Map)['target']), ['gallery', 'sameFolder', 'folder']);
     });
 
+    test('scanImages parses native list', () async {
+      fake.images = [photo('1', 'IMG_1.HEIC', 3), photo('2', 'a.png', 4)];
+      expect((await RawNative.scanImages()).map((p) => p.name), ['IMG_1.HEIC', 'a.png']);
+    });
+
+    test('RAW convert sends no image keys; image convert sends source, format, onlyIfSmaller', () async {
+      await RawNative.convert('1', quality: 85, maxSide: 0);
+      await RawNative.convert('2', quality: 80, maxSide: 3000, imageFormat: 'same', onlyIfSmaller: true);
+      await RawNative.convert('3', quality: 90, maxSide: 0, imageFormat: 'jpeg', target: SaveTarget.folder);
+      final args = fake.callsOf('convert').map((c) => c.arguments).toList();
+      expect(args[0], {'id': '1', 'quality': 85, 'maxSide': 0, 'target': 'gallery'});
+      expect(args[1], {
+        'id': '2', 'quality': 80, 'maxSide': 3000, 'target': 'gallery',
+        'source': 'image', 'format': 'same', 'onlyIfSmaller': true,
+      });
+      expect(args[2], {
+        'id': '3', 'quality': 90, 'maxSide': 0, 'target': 'folder',
+        'source': 'image', 'format': 'jpeg', 'onlyIfSmaller': false,
+      });
+    });
+
+    test('convert parses skipped flag', () async {
+      fake.convertResults['1'] = {'newId': '', 'inBytes': 5, 'outBytes': 5, 'skipped': true};
+      expect((await RawNative.convert('1', quality: 80, maxSide: 0, imageFormat: 'same')).skipped, isTrue);
+      expect((await RawNative.convert('2', quality: 80, maxSide: 0)).skipped, isFalse);
+    });
+
     test('pickFolder returns name or null; savedFolder swallows errors', () async {
       fake.pickFolderResult = 'Kompres';
       expect(await RawNative.pickFolder(), 'Kompres');

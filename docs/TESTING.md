@@ -6,9 +6,9 @@ Semua test otomatis berjalan di Mac tanpa simulator/emulator.
 
 | Lapisan | Perintah | Isi |
 |---|---|---|
-| Dart (logika + UI) | `flutter test` | 63 test: lokasi simpan (galeri default, folder sama khusus Android, pilih/ganti/ingat folder, batal & error pemilih), beranda (navigasi ke 2 fitur), SortPage (izin, kosong, error, geser kanan/kiri, tombol, urungkan, tinjau sebelum hapus, batal hapus per foto, hapus sebagian/gagal, konfirmasi keluar, paging tanpa lompat setelah hapus), format ukuran, parsing channel, alur CompressPage (izin, kosong, error, pilih/pilih semua, dialog, opsi kualitas & ukuran, switch hapus, rescan) dan ProcessPage (sukses, gagal sebagian, nama file kembar, semua gagal, hapus dibatalkan/sebagian/error, jalur Android 9 vs 10+, tombol Hentikan, tombol back diblokir) |
-| Parser CR3 (Android) | `cd android && ./gradlew :app:testDebugUnitTest` | 15 JUnit: CR3 sintetis (co64/stco, ukuran sampel seragam, header box 64-bit, TIFF II/MM, format nilai EXIF untuk ExifInterface, GPS, trak pertama saja, file rusak/terpotong/bukan CR3) |
-| Encoder iOS | `tool/test_ios_encoder.sh` | DNG sintetis: ukuran asli, maxSide, tanpa upscale, orientasi 6 diterapkan ke pixel, kualitas vs ukuran file, quality di luar rentang, file rusak |
+| Dart (logika + UI) | `flutter test` | 105 test: opsi di lembar bawah setelah memilih foto (Batal mempertahankan pilihan, foto berformat sama dilewati), beranda (4 ikon sebaris, navigasi tiap fitur), Kompres RAW (izin, kosong, error, pilih/pilih semua, dialog, kualitas/ukuran, switch hapus, rescan, lokasi simpan, pilihan diingat & nilai rusak → default), Kompres Foto (scan non-RAW, format sama + `onlyIfSmaller`, dilewati tidak dihapus, teks iOS/Android), Ubah Format (default JPG, foto berformat sama disembunyikan, target iOS JPG/HEIC/PNG vs Android JPG/PNG/WEBP, PNG tanpa slider, hasil lebih besar, format diingat per fitur), Sortir Foto (geser, tombol, urungkan, tinjau sebelum hapus, hapus sebagian/gagal, konfirmasi keluar, paging setelah hapus, progres diingat & lewati, ulangi dari awal, tombol favorit), ProcessPage (sukses, gagal sebagian, Hentikan, back diblokir, jalur Android 9 vs 10+), parsing channel |
+| Android (JUnit) | `cd android && ./gradlew :app:testDebugUnitTest` | 15 test parser CR3 (co64/stco, box 64-bit, TIFF II/MM, format EXIF, GPS, file rusak/terpotong) + 5 test `ImageFormats` (format sama/eksplisit, HEIC → JPG, ekstensi, MIME, nama file hasil) |
+| Encoder iOS | `tool/test_ios_encoder.sh` | RAW: DNG sintetis (ukuran asli, maxSide, tanpa upscale, orientasi 6, kualitas, file rusak). Foto biasa: JPEG→JPEG (GPS/TIFF/tanggal tersalin), orientasi 6, maxSide, kualitas, JPEG→PNG, PNG→JPEG, JPEG↔HEIC, aturan format, file rusak |
 | Static | `flutter analyze` | tanpa issue |
 
 Tambahkan file kamera asli dengan `CR3_SAMPLES_DIR`:
@@ -64,6 +64,25 @@ Pakai 1–2 foto dulu dengan **"Hapus RAW asli" OFF**.
 - [ ] **S6 Keluar** dengan foto bertanda: muncul "Keluar tanpa menghapus?".
 - [ ] **S7 Galeri besar** (>100 foto): urutan terbaru dulu, tidak ada foto terlewat setelah menghapus.
 
+### Kompres Foto & Ubah Format (iOS & Android)
+
+- [ ] **F1 Kompres Foto**: pilih 2–3 foto HP (hapus OFF) → hasil format sama, lebih kecil, tanggal/lokasi sama; foto yang sudah kecil "Dilewati".
+- [ ] **F2 Ganti asli**: hapus ON → asli masuk "Baru Dihapus" (iOS) / terhapus (Android); yang dilewati tetap ada.
+- [ ] **F3 HEIC → JPG** (iPhone): hasil `IMG_xxxx.JPG` di Photos, tegak, info kamera tetap.
+- [ ] **F4 JPG → HEIC / PNG** (iOS), **JPG → WEBP / PNG** (Android): file terbuka di galeri & app lain.
+- [ ] **F5 Foto editan** (iOS, crop/filter): hasil memakai versi editan.
+- [ ] **F6 Live Photo**: hasil berupa foto biasa (sesuai peringatan dialog).
+- [ ] **F7 Galeri besar**: daftar Kompres Foto termuat dalam waktu wajar (catat lama untuk ±5.000 foto).
+
+### Beranda & pengaturan
+
+- [ ] **B1** 4 ikon sebaris; tiap ikon membuka fiturnya.
+- [ ] **B1b** Saat memilih foto, bagian bawah hanya berisi satu tombol; semua opsi (format, kualitas, ukuran, lokasi, hapus asli) muncul di lembar bawah setelah tombol ditekan; Batal mempertahankan pilihan foto.
+- [ ] **B2** Ubah kualitas/ukuran/lokasi di satu fitur, tutup & buka app → pilihan tetap; fitur lain tidak ikut berubah.
+- [ ] **B3 Sortir**: simpan beberapa foto, keluar, buka lagi → foto itu tidak muncul; menu "Ulangi dari awal" menampilkannya lagi.
+- [ ] **B4 Favorit** (iOS / Android 11+): tombol ⭐ menandai favorit di galeri; tidak pindah ke foto berikutnya. Android 9–10: tombol tidak tampil.
+- [ ] **B5 Kartu SD** (Android): "Pilih folder / kartu SD…" → pilih/buat folder di kartu SD → JPG tersimpan & tampil di galeri.
+
 ## Batasan yang diketahui
 
 - Android 10+: CR3 di folder Download yang tidak terindeks sebagai foto tidak terlihat aplikasi
@@ -71,4 +90,7 @@ Pakai 1–2 foto dulu dengan **"Hapus RAW asli" OFF**.
 - Android: CR3 memakai JPG olahan kamera di dalam file, bukan decode RAW penuh.
 - iOS: build butuh komponen "iOS platform" di Xcode › Settings › Components (berisi juga runtime
   simulator), walau hanya untuk deploy ke iPhone fisik.
-- Sortir Foto belum mengingat foto yang sudah disimpan; sesi berikutnya mulai lagi dari foto terbaru.
+- Android tidak bisa menulis HEIC: Kompres Foto mengubah HEIC menjadi JPG; Ubah Format tanpa HEIC.
+- Android 11+: root kartu SD/memori internal dan folder Download tidak bisa dipilih langsung di pemilih folder; buat atau pilih subfolder.
+- Favorit di Android hanya ada di Android 11+ (setiap perubahan memunculkan dialog izin sistem).
+- Kompres/Ubah Format menulis ulang piksel: HDR gain map dan Live Photo tidak ikut tersalin.

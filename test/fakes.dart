@@ -14,6 +14,9 @@ class FakePlatform {
   int permission = 3;
 
   List<Map<String, Object?>> photos = [];
+
+  /// Non-RAW gallery photos returned by `scanImages`.
+  List<Map<String, Object?>> images = [];
   PlatformException? scanError;
 
   /// Per-id convert result. Missing id -> default success map. A [PlatformException] value is thrown.
@@ -55,6 +58,9 @@ class FakePlatform {
       case 'scanRaw':
         if (scanError != null) throw scanError!;
         return photos;
+      case 'scanImages':
+        if (scanError != null) throw scanError!;
+        return images;
       case 'convert':
         final id = (call.arguments as Map)['id'] as String;
         if (convertGate != null) await convertGate!(id);

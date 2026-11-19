@@ -19,11 +19,14 @@ class RawPhoto {
 }
 
 class ConvertResult {
-  ConvertResult({required this.newId, required this.inBytes, required this.outBytes});
+  ConvertResult({required this.newId, required this.inBytes, required this.outBytes, this.skipped = false});
 
   final String newId;
   final int inBytes;
   final int outBytes;
+
+  /// Hasil tidak lebih kecil dari asli, jadi tidak disimpan (hanya dengan `onlyIfSmaller`).
+  final bool skipped;
 }
 
 /// Jembatan ke converter native (iOS: Core Image, Android: Skia/MediaStore).
@@ -55,23 +58,47 @@ class RawNative {
     return list.map(RawPhoto.fromMap).toList();
   }
 
-  /// Konversi RAW ke JPEG dan simpan di [target]. RAW asli tidak dihapus.
-  /// [maxSide] 0 = resolusi asli.
+  /// Semua foto non-RAW (JPEG, HEIC, PNG, …) di galeri, terbaru dulu.
+  static Future<List<RawPhoto>> scanImages() async {
+    final list = await _ch.invokeListMethod<Map<dynamic, dynamic>>('scanImages') ?? [];
+    return list.map(RawPhoto.fromMap).toList();
+  }
+
+  /// Konversi lalu simpan di [target]. File asli tidak dihapus. [maxSide] 0 = resolusi asli.
+  ///
+  /// [imageFormat] null: sumber RAW → JPG. Selain itu: foto biasa → format itu
+  /// (`same` = format asli). [onlyIfSmaller]: hasil yang tidak lebih kecil tidak disimpan.
   static Future<ConvertResult> convert(
     String id, {
     required int quality,
     required int maxSide,
     SaveTarget target = SaveTarget.gallery,
+    String? imageFormat,
+    bool onlyIfSmaller = false,
   }) async {
-    final m = await _ch.invokeMapMethod<String, dynamic>(
-      'convert',
-      {'id': id, 'quality': quality, 'maxSide': maxSide, 'target': target.name},
-    );
+    final m = await _ch.invokeMapMethod<String, dynamic>('convert', {
+      'id': id,
+      'quality': quality,
+      'maxSide': maxSide,
+      'target': target.name,
+      if (imageFormat != null) ...{'source': 'image', 'format': imageFormat, 'onlyIfSmaller': onlyIfSmaller},
+    });
     return ConvertResult(
       newId: m?['newId'] as String? ?? '',
       inBytes: (m?['inBytes'] as num?)?.toInt() ?? 0,
       outBytes: (m?['outBytes'] as num?)?.toInt() ?? 0,
+      skipped: m?['skipped'] == true,
     );
+  }
+
+  /// Versi API Android (mis. 28 = Android 9), atau null di platform lain.
+  static Future<int?> androidSdk() async {
+    if (!_isAndroid) return null;
+    try {
+      return await _ch.invokeMethod<int>('androidSdk');
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Buka pemilih folder sistem. Mengembalikan nama folder, atau null bila dibatalkan.

@@ -16,6 +16,15 @@ class FakeSortSource implements SortSource {
   List<String>? deleteResult;
   Object? deleteError;
 
+  /// Persisted "already kept" ids.
+  Set<String> sorted = {};
+  int sortedSaves = 0;
+
+  bool favoriteSupported = false;
+  bool favoriteOk = true;
+  final Set<String> favorites = {};
+  final List<(String, bool)> favoriteCalls = [];
+
   @override
   Future<bool> requestAccess() async => access;
 
@@ -30,7 +39,30 @@ class FakeSortSource implements SortSource {
     ranges.add((start, count));
     final end = (start + count).clamp(0, photos.length);
     if (start >= end) return [];
-    return [for (final id in photos.sublist(start, end)) SortPhoto(id: id, date: DateTime(2023, 3, 30))];
+    return [
+      for (final id in photos.sublist(start, end))
+        SortPhoto(id: id, date: DateTime(2023, 3, 30), favorite: favorites.contains(id)),
+    ];
+  }
+
+  @override
+  Future<Set<String>> loadSorted() async => Set.of(sorted);
+
+  @override
+  Future<void> saveSorted(Set<String> ids) async {
+    sortedSaves++;
+    sorted = Set.of(ids);
+  }
+
+  @override
+  Future<bool> canFavorite() async => favoriteSupported;
+
+  @override
+  Future<bool> setFavorite(SortPhoto photo, bool favorite) async {
+    favoriteCalls.add((photo.id, favorite));
+    if (!favoriteOk) return false;
+    favorite ? favorites.add(photo.id) : favorites.remove(photo.id);
+    return true;
   }
 
   @override
@@ -286,6 +318,122 @@ void main() {
     expect(src.ranges.last, (49, 40));
     _expectTop('p71');
     expect(find.text('72 / 100'), findsOneWidget);
+  });
+
+  group('remembers progress', () {
+    testWidgets('photos kept earlier are skipped, counter keeps gallery position', (tester) async {
+      final src = FakeSortSource(5)..sorted = {'p0', 'p2'};
+      await _pump(tester, src);
+      _expectTop('p1');
+      expect(find.text('2 / 5'), findsOneWidget);
+      await _tapTooltip(tester, 'Simpan');
+      _expectTop('p3');
+      expect(find.text('4 / 5'), findsOneWidget);
+    });
+
+    testWidgets('keep is saved, undo removes it again', (tester) async {
+      final src = await _pump(tester, FakeSortSource(3));
+      await _tapTooltip(tester, 'Simpan');
+      expect(src.sorted, {'p0'});
+      await _tapTooltip(tester, 'Hapus');
+      expect(src.sorted, {'p0'}, reason: 'marked photos are not remembered');
+      await _tapTooltip(tester, 'Urungkan');
+      await _tapTooltip(tester, 'Urungkan');
+      expect(src.sorted, isEmpty);
+    });
+
+    testWidgets('photo un-marked in review counts as kept', (tester) async {
+      final src = await _pump(tester, FakeSortSource(3));
+      await _tapTooltip(tester, 'Hapus');
+      await _tapTooltip(tester, 'Tinjau & hapus');
+      await tester.tap(find.byKey(const ValueKey('review-p0')));
+      await tester.pump();
+      await tester.tap(find.text('Simpan semua'));
+      await tester.pumpAndSettle();
+      expect(src.sorted, {'p0'});
+    });
+
+    testWidgets('everything sorted before: message and start over', (tester) async {
+      final src = FakeSortSource(3)..sorted = {'p0', 'p1', 'p2'};
+      await _pump(tester, src);
+      expect(find.text('Semua foto sudah disortir sebelumnya.\n3 foto disimpan.'), findsOneWidget);
+      await tester.tap(find.text('Ulangi dari awal'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Ulangi'));
+      await tester.pumpAndSettle();
+      expect(src.sorted, isEmpty);
+      _expectTop('p0');
+      expect(find.text('1 / 3'), findsOneWidget);
+    });
+
+    testWidgets('menu reset can be cancelled, then clears marks too', (tester) async {
+      final src = FakeSortSource(4)..sorted = {'p0'};
+      await _pump(tester, src);
+      await _tapTooltip(tester, 'Hapus'); // marks p1
+      await _tapTooltip(tester, 'Menu');
+      await tester.tap(find.text('Ulangi dari awal'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('1 tanda hapus di sesi ini juga dibatalkan'), findsOneWidget);
+      await tester.tap(find.text('Batal'));
+      await tester.pumpAndSettle();
+      _expectTop('p2');
+
+      await _tapTooltip(tester, 'Menu');
+      await tester.tap(find.text('Ulangi dari awal'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Ulangi'));
+      await tester.pumpAndSettle();
+      _expectTop('p0');
+      expect(find.text(_counts(0, 0)), findsOneWidget);
+      expect(src.deleteCalls, isEmpty);
+    });
+
+    testWidgets('finished view mentions skipped photos', (tester) async {
+      await _pump(tester, FakeSortSource(2)..sorted = {'p0'});
+      await _tapTooltip(tester, 'Simpan');
+      expect(find.textContaining('1 foto dilewati karena sudah disortir sebelumnya.'), findsOneWidget);
+    });
+
+    testWidgets('large gallery: skips a long sorted run without stalling', (tester) async {
+      final src = FakeSortSource(200)..sorted = {for (var i = 0; i < 150; i++) 'p$i'};
+      await _pump(tester, src);
+      _expectTop('p150');
+      expect(find.text('151 / 200'), findsOneWidget);
+    });
+  });
+
+  group('favorite button', () {
+    testWidgets('hidden when the gallery has no favorites (Android 9-10)', (tester) async {
+      await _pump(tester, FakeSortSource(2));
+      expect(find.byTooltip('Tambah ke Favorit'), findsNothing);
+    });
+
+    testWidgets('toggles favorite without moving to the next photo', (tester) async {
+      final src = await _pump(tester, FakeSortSource(3)..favoriteSupported = true);
+      await _tapTooltip(tester, 'Tambah ke Favorit');
+      expect(src.favoriteCalls, [('p0', true)]);
+      expect(find.byIcon(Icons.star), findsNWidgets(2), reason: 'button and card badge');
+      _expectTop('p0');
+      expect(find.text(_counts(0, 0)), findsOneWidget);
+
+      await _tapTooltip(tester, 'Hapus dari Favorit');
+      expect(src.favoriteCalls.last, ('p0', false));
+      expect(find.byTooltip('Tambah ke Favorit'), findsOneWidget);
+    });
+
+    testWidgets('shows existing favorite state per photo', (tester) async {
+      await _pump(tester, FakeSortSource(2)..favoriteSupported = true..favorites.add('p1'));
+      expect(find.byTooltip('Tambah ke Favorit'), findsOneWidget);
+      await _tapTooltip(tester, 'Simpan');
+      expect(find.byTooltip('Hapus dari Favorit'), findsOneWidget);
+    });
+
+    testWidgets('failure keeps state and says so', (tester) async {
+      await _pump(tester, FakeSortSource(2)..favoriteSupported = true..favoriteOk = false);
+      await _tapTooltip(tester, 'Tambah ke Favorit');
+      expect(find.text('Gagal mengubah favorit'), findsOneWidget);
+      expect(find.byTooltip('Tambah ke Favorit'), findsOneWidget);
+    });
   });
 }
 

@@ -26,8 +26,12 @@ import UniformTypeIdentifiers
 ///
 /// Channel `raw_compressor/native`:
 /// - `scanRaw`  -> [{id, name, size}]  semua foto RAW di library.
-/// - `convert`  {id, quality, maxSide, target} -> {newId, inBytes, outBytes}
-///   Decode RAW, encode JPEG (metadata EXIF/GPS disalin), lalu simpan:
+/// - `scanImages` -> [{id, name, size}]  semua foto non-RAW (JPEG, HEIC, PNG, …), terbaru dulu.
+/// - `convert`  {id, quality, maxSide, target, source, format, onlyIfSmaller}
+///   -> {newId, inBytes, outBytes, skipped}
+///   `source` "raw" (default): decode RAW -> JPEG. "image": foto biasa -> `format`
+///   ("jpeg" / "heic" / "png" / "same"). `onlyIfSmaller`: hasil yang tidak lebih kecil tidak
+///   disimpan (skipped = true). Metadata EXIF/GPS disalin, lalu simpan:
 ///   `gallery` = asset baru di Photos dengan tanggal & lokasi yang sama,
 ///   `folder` = file di folder pilihan pengguna (app Files, iCloud Drive, dll.; newId kosong).
 ///   Asset RAW asli TIDAK dihapus di sini.
@@ -58,6 +62,11 @@ final class RawConverterPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegat
         let list = self.scanRaw()
         DispatchQueue.main.async { result(list) }
       }
+    case "scanImages":
+      queue.async {
+        let list = self.scanImages()
+        DispatchQueue.main.async { result(list) }
+      }
     case "convert":
       guard let args = call.arguments as? [String: Any], let id = args["id"] as? String else {
         result(FlutterError(code: "bad_args", message: "id wajib diisi", details: nil))
@@ -66,10 +75,17 @@ final class RawConverterPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegat
       let quality = args["quality"] as? Int ?? 85
       let maxSide = args["maxSide"] as? Int ?? 0
       let toFolder = (args["target"] as? String) == "folder"
+      let fromRaw = (args["source"] as? String ?? "raw") == "raw"
+      let format = args["format"] as? String
+      let onlyIfSmaller = args["onlyIfSmaller"] as? Bool ?? false
       queue.async {
         do {
           let r = try autoreleasepool {
-            try self.convert(id: id, quality: quality, maxSide: maxSide, toFolder: toFolder)
+            fromRaw
+              ? try self.convert(id: id, quality: quality, maxSide: maxSide, toFolder: toFolder)
+              : try self.convertImage(
+                id: id, quality: quality, maxSide: maxSide, toFolder: toFolder,
+                format: format, onlyIfSmaller: onlyIfSmaller)
           }
           DispatchQueue.main.async { result(r) }
         } catch {
@@ -131,6 +147,37 @@ final class RawConverterPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegat
     return out
   }
 
+  /// Resource foto biasa (versi editan bila ada).
+  private func photoResource(for asset: PHAsset) -> PHAssetResource? {
+    let all = PHAssetResource.assetResources(for: asset)
+    return all.first { $0.type == .fullSizePhoto } ?? all.first { $0.type == .photo }
+  }
+
+  /// Nama file asli (bukan "FullSizeRender.jpg" dari editan).
+  private func originalName(for asset: PHAsset) -> String {
+    let all = PHAssetResource.assetResources(for: asset)
+    return (all.first { $0.type == .photo } ?? all.first)?.originalFilename ?? "IMG.JPG"
+  }
+
+  private func scanImages() -> [[String: Any]] {
+    let opts = PHFetchOptions()
+    opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+    let assets = PHAsset.fetchAssets(with: .image, options: opts)
+    var out: [[String: Any]] = []
+    out.reserveCapacity(assets.count)
+    assets.enumerateObjects { asset, _, _ in
+      autoreleasepool {
+        guard self.rawResource(for: asset) == nil, let r = self.photoResource(for: asset) else { return }
+        out.append([
+          "id": asset.localIdentifier,
+          "name": self.originalName(for: asset),
+          "size": self.resourceSize(r),
+        ])
+      }
+    }
+    return out
+  }
+
   // MARK: - Convert
 
   private struct ConvertError: LocalizedError {
@@ -176,25 +223,64 @@ final class RawConverterPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegat
       rawURL: rawURL, to: jpgURL, quality: quality, maxSide: maxSide, context: ciContext)
 
     let base = (res.originalFilename as NSString).deletingPathExtension
-    if toFolder {
-      try saveToFolder(jpgURL, name: base)
-      return ["newId": "", "inBytes": inBytes, "outBytes": outBytes]
+    let newId = try save(jpgURL, like: asset, name: base, ext: "JPG", toFolder: toFolder)
+    return ["newId": newId, "inBytes": inBytes, "outBytes": outBytes, "skipped": false]
+  }
+
+  private func convertImage(
+    id: String, quality: Int, maxSide: Int, toFolder: Bool, format: String?, onlyIfSmaller: Bool
+  ) throws -> [String: Any] {
+    guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject
+    else { throw ConvertError("Foto tidak ditemukan") }
+    guard let res = photoResource(for: asset) else { throw ConvertError("Bukan foto") }
+
+    let fm = FileManager.default
+    let tmpDir = fm.temporaryDirectory.appendingPathComponent("rawconv", isDirectory: true)
+    try? fm.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+    let name = originalName(for: asset)
+    let srcExt = (res.originalFilename as NSString).pathExtension
+    let fmt = ImageFormat.parse(format, sourceExtension: srcExt)
+    let inURL = tmpDir.appendingPathComponent(UUID().uuidString)
+      .appendingPathExtension(srcExt.isEmpty ? "jpg" : srcExt)
+    let outURL = tmpDir.appendingPathComponent(UUID().uuidString)
+      .appendingPathExtension(fmt.fileExtension.lowercased())
+    defer {
+      try? fm.removeItem(at: inURL)
+      try? fm.removeItem(at: outURL)
     }
 
-    // Simpan ke Photos dengan tanggal, lokasi, favorit yang sama.
+    try writeResource(res, to: inURL)
+    let inBytes = (try? inURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+    let outBytes = try ImageEncoder.encode(
+      source: inURL, to: outURL, format: fmt, quality: quality, maxSide: maxSide)
+    if onlyIfSmaller && outBytes >= inBytes {
+      return ["newId": "", "inBytes": inBytes, "outBytes": inBytes, "skipped": true]
+    }
+    let base = (name as NSString).deletingPathExtension
+    let newId = try save(outURL, like: asset, name: base, ext: fmt.fileExtension, toFolder: toFolder)
+    return ["newId": newId, "inBytes": inBytes, "outBytes": outBytes, "skipped": false]
+  }
+
+  /// Simpan ke folder pilihan, atau ke Photos dengan tanggal, lokasi, favorit yang sama.
+  private func save(_ file: URL, like asset: PHAsset, name base: String, ext: String, toFolder: Bool) throws
+    -> String
+  {
+    if toFolder {
+      try saveToFolder(file, name: base, ext: ext.lowercased())
+      return ""
+    }
     var newId: String?
     try PHPhotoLibrary.shared().performChangesAndWait {
       let req = PHAssetCreationRequest.forAsset()
       let o = PHAssetResourceCreationOptions()
-      o.originalFilename = base + ".JPG"
-      req.addResource(with: .photo, fileURL: jpgURL, options: o)
+      o.originalFilename = base + "." + ext
+      req.addResource(with: .photo, fileURL: file, options: o)
       req.creationDate = asset.creationDate
       req.location = asset.location
       req.isFavorite = asset.isFavorite
       newId = req.placeholderForCreatedAsset?.localIdentifier
     }
-
-    return ["newId": newId ?? "", "inBytes": inBytes, "outBytes": outBytes]
+    return newId ?? ""
   }
 
   // MARK: - Custom folder
@@ -261,8 +347,8 @@ final class RawConverterPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegat
     return url
   }
 
-  /// Salin JPG ke folder pilihan; "Nama (1).jpg" bila nama sudah ada.
-  private func saveToFolder(_ jpgURL: URL, name base: String) throws {
+  /// Salin file ke folder pilihan; "Nama (1).jpg" bila nama sudah ada.
+  private func saveToFolder(_ jpgURL: URL, name base: String, ext: String) throws {
     guard let dir = savedFolderURL() else {
       throw ConvertError("Folder tujuan tidak bisa diakses. Pilih ulang folder.")
     }
@@ -270,10 +356,10 @@ final class RawConverterPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegat
     defer { if ok { dir.stopAccessingSecurityScopedResource() } }
 
     let fm = FileManager.default
-    var target = dir.appendingPathComponent(base + ".jpg")
+    var target = dir.appendingPathComponent("\(base).\(ext)")
     var n = 1
     while fm.fileExists(atPath: target.path) {
-      target = dir.appendingPathComponent("\(base) (\(n)).jpg")
+      target = dir.appendingPathComponent("\(base) (\(n)).\(ext)")
       n += 1
     }
 

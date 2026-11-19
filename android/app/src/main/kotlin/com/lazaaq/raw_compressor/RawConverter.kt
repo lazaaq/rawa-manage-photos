@@ -35,14 +35,19 @@ import kotlin.math.roundToInt
  * Channel `raw_compressor/native`:
  * - `scanRaw` -> [{id, name, size}]  semua file RAW yang terindeks MediaStore (termasuk
  *   folder Download, bukan hanya galeri). id = _ID tabel MediaStore.Files.
- * - `convert` {id, quality, maxSide, target} -> {newId, inBytes, outBytes}
- *   Decode RAW, encode JPEG (EXIF disalin), simpan sesuai `target`:
+ * - `scanImages` -> [{id, name, size}] semua foto non-RAW di galeri, terbaru dulu.
+ * - `convert` {id, quality, maxSide, target, source, format, onlyIfSmaller}
+ *   -> {newId, inBytes, outBytes, skipped}
+ *   `source` "raw" (default): decode RAW -> JPEG. "image": foto biasa -> `format`
+ *   ("jpeg" / "png" / "webp" / "same", lihat [ImageFormats]). `onlyIfSmaller`: hasil yang
+ *   tidak lebih kecil tidak disimpan (skipped). EXIF disalin, simpan sesuai `target`:
  *   `gallery` = Pictures/rawa di penyimpanan internal (tampil di galeri),
  *   `sameFolder` = folder RAW asli (Android 10+: hanya bila di DCIM/ atau Pictures/),
  *   `folder` = folder pilihan pengguna (Storage Access Framework, termasuk kartu SD).
  *   newId kosong untuk `folder`. File RAW asli TIDAK dihapus di sini.
  * - `pickFolder` -> nama folder, atau null bila dibatalkan. Izin disimpan permanen.
  * - `savedFolder` -> nama folder terakhir yang masih bisa ditulis, atau null.
+ * - `androidSdk` -> Build.VERSION.SDK_INT.
  * - `thumbnail` {id, size} -> JPEG bytes, untuk file yang tidak dikenali galeri (mis. CR3).
  * - `deleteLegacy` {ids} -> id yang benar-benar terhapus (Android 9), atau null di Android 10+
  *   (Dart lalu memakai photo_manager yang menampilkan dialog konfirmasi sistem).
@@ -97,14 +102,19 @@ class RawConverter(
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "scanRaw" -> run(result, executor) { scanRaw() }
+            "scanImages" -> run(result, executor) { scanImages() }
             "convert" -> {
                 val id = call.argument<String>("id")?.toLongOrNull()
                     ?: return result.error("bad_args", "id wajib diisi", null)
                 val quality = call.argument<Int>("quality") ?: 85
                 val maxSide = call.argument<Int>("maxSide") ?: 0
                 val target = call.argument<String>("target") ?: "gallery"
-                run(result, executor) { convert(id, quality, maxSide, target) }
+                val fromRaw = (call.argument<String>("source") ?: "raw") == "raw"
+                val format = call.argument<String>("format")
+                val onlyIfSmaller = call.argument<Boolean>("onlyIfSmaller") ?: false
+                run(result, executor) { convert(id, quality, maxSide, target, fromRaw, format, onlyIfSmaller) }
             }
+            "androidSdk" -> result.success(Build.VERSION.SDK_INT)
             "pickFolder" -> pickFolder(result)
             "savedFolder" -> run(result, thumbExecutor) { savedFolderTree()?.let(::folderName) }
             "thumbnail" -> {
@@ -160,6 +170,29 @@ class RawConverter(
                         "size" to c.getLong(2),
                     )
                 )
+            }
+        }
+        return out
+    }
+
+    /** Semua foto non-RAW (JPEG, PNG, HEIC, WebP, …) di MediaStore.Images. */
+    @Suppress("DEPRECATION")
+    private fun scanImages(): List<Map<String, Any>> {
+        val projection = arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.SIZE,
+            MediaStore.MediaColumns.DATA,
+        )
+        val out = mutableListOf<Map<String, Any>>()
+        context.contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, null, null,
+            "${MediaStore.MediaColumns.DATE_ADDED} DESC",
+        )?.use { c ->
+            while (c.moveToNext()) {
+                val name = c.getString(1) ?: c.getString(3)?.substringAfterLast('/') ?: continue
+                if (name.substringAfterLast('.', "").lowercase() in RAW_EXTS) continue
+                out.add(mapOf("id" to c.getLong(0).toString(), "name" to name, "size" to c.getLong(2)))
             }
         }
         return out
@@ -230,13 +263,17 @@ class RawConverter(
 
     // ------------------------------------------------------------- convert
 
-    private fun convert(id: Long, quality: Int, maxSide: Int, target: String): Map<String, Any> {
+    private fun convert(
+        id: Long, quality: Int, maxSide: Int, target: String,
+        fromRaw: Boolean, format: String?, onlyIfSmaller: Boolean,
+    ): Map<String, Any> {
         val src = querySource(id)
-        val tmp = File(context.cacheDir, "${UUID.randomUUID()}.jpg")
+        val fmt = if (fromRaw) ImageFormats.JPEG else ImageFormats.resolve(format, src.name)
+        val tmp = File(context.cacheDir, "${UUID.randomUUID()}.${ImageFormats.extension(fmt)}")
         try {
             val exif: Map<String, String>?
             var bitmap: Bitmap
-            if (isCr3(src.name)) {
+            if (fromRaw && isCr3(src.name)) {
                 // CR3 tidak didukung decoder Android: pakai JPG resolusi penuh di dalamnya.
                 val (meta, jpeg) = readCr3(src)
                 bitmap = decodeBytes(jpeg, maxSide) ?: throw IllegalStateException("Gagal membaca JPG di dalam CR3")
@@ -249,7 +286,8 @@ class RawConverter(
             }
             // Pixel sudah tegak: semua galeri menampilkan benar walau mengabaikan tag EXIF.
 
-            tmp.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(1, 100), it) }
+            if (fmt == ImageFormats.JPEG && bitmap.hasAlpha()) bitmap = flattenOnWhite(bitmap)
+            tmp.outputStream().use { bitmap.compress(compressFormat(fmt), quality.coerceIn(1, 100), it) }
             val width = bitmap.width
             val height = bitmap.height
             bitmap.recycle()
@@ -259,15 +297,38 @@ class RawConverter(
             } else {
                 copyExif(src, tmp, width, height)
             }
-            val newId = when (target) {
-                "folder" -> saveToFolder(tmp, src)
-                "sameFolder" -> insertJpeg(tmp, src, sameFolder = true)
-                else -> insertJpeg(tmp, src, sameFolder = false)
+            if (onlyIfSmaller && src.size > 0 && tmp.length() >= src.size) {
+                return mapOf("newId" to "", "inBytes" to src.size, "outBytes" to src.size, "skipped" to true)
             }
-            return mapOf("newId" to newId, "inBytes" to src.size, "outBytes" to tmp.length())
+            val newId = when (target) {
+                "folder" -> saveToFolder(tmp, src, fmt)
+                "sameFolder" -> insertJpeg(tmp, src, sameFolder = true, fmt)
+                else -> insertJpeg(tmp, src, sameFolder = false, fmt)
+            }
+            return mapOf("newId" to newId, "inBytes" to src.size, "outBytes" to tmp.length(), "skipped" to false)
         } finally {
             tmp.delete()
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun compressFormat(fmt: String): Bitmap.CompressFormat = when (fmt) {
+        ImageFormats.PNG -> Bitmap.CompressFormat.PNG
+        ImageFormats.WEBP ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) Bitmap.CompressFormat.WEBP_LOSSY
+            else Bitmap.CompressFormat.WEBP
+        else -> Bitmap.CompressFormat.JPEG
+    }
+
+    /** JPEG tidak punya transparansi: latar putih, bukan hitam. */
+    private fun flattenOnWhite(bmp: Bitmap): Bitmap {
+        val out = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
+        android.graphics.Canvas(out).apply {
+            drawColor(android.graphics.Color.WHITE)
+            drawBitmap(bmp, 0f, 0f, null)
+        }
+        bmp.recycle()
+        return out
     }
 
     private fun sampleFor(long: Int, maxSide: Int): Int {
@@ -439,25 +500,28 @@ class RawConverter(
 
     // --------------------------------------------------------------- insert
 
-    private fun insertJpeg(file: File, src: Source, sameFolder: Boolean): String =
-        if (isScopedStorage) insertJpegScoped(file, src, sameFolder) else insertJpegLegacy(file, src, sameFolder)
+    private fun insertJpeg(file: File, src: Source, sameFolder: Boolean, fmt: String): String =
+        if (isScopedStorage) insertJpegScoped(file, src, sameFolder, fmt)
+        else insertJpegLegacy(file, src, sameFolder, fmt)
 
     /** Android 9: tulis file langsung (di samping RAW atau Pictures/rawa), lalu daftarkan ke MediaStore. */
     @Suppress("DEPRECATION")
-    private fun insertJpegLegacy(file: File, src: Source, sameFolder: Boolean): String {
+    private fun insertJpegLegacy(file: File, src: Source, sameFolder: Boolean, fmt: String): String {
         val dir = src.dataPath?.takeIf { sameFolder }?.let { File(it).parentFile }?.takeIf { it.canWrite() }
             ?: File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "rawa")
                 .apply { mkdirs() }
-        val base = src.name.substringBeforeLast('.')
-        var target = File(dir, "$base.jpg")
+        val first = ImageFormats.outputName(src.name, fmt)
+        val base = first.substringBeforeLast('.')
+        val ext = ImageFormats.extension(fmt)
+        var target = File(dir, first)
         var n = 1
-        while (target.exists()) target = File(dir, "$base (${n++}).jpg")
+        while (target.exists()) target = File(dir, "$base (${n++}).$ext")
         file.copyTo(target)
 
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DATA, target.absolutePath)
             put(MediaStore.Images.Media.DISPLAY_NAME, target.name)
-            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.MIME_TYPE, ImageFormats.mime(fmt))
             put(MediaStore.Images.Media.SIZE, target.length())
             src.dateTaken?.let { put(MediaStore.Images.Media.DATE_TAKEN, it) }
             put(MediaStore.Images.Media.DATE_ADDED, System.currentTimeMillis() / 1000)
@@ -471,20 +535,19 @@ class RawConverter(
             throw IllegalStateException("Gagal mendaftarkan JPG ke galeri")
         }
         // Lengkapi metadata (lebar/tinggi, tanggal dari EXIF, dll.) di MediaStore.
-        MediaScannerConnection.scanFile(context, arrayOf(target.absolutePath), arrayOf("image/jpeg"), null)
+        MediaScannerConnection.scanFile(context, arrayOf(target.absolutePath), arrayOf(ImageFormats.mime(fmt)), null)
         return ContentUris.parseId(newUri).toString()
     }
 
     /** Android 10+: scoped storage via MediaStore. */
-    private fun insertJpegScoped(file: File, src: Source, sameFolder: Boolean): String {
+    private fun insertJpegScoped(file: File, src: Source, sameFolder: Boolean, fmt: String): String {
         val cr = context.contentResolver
         // MediaStore hanya mengizinkan gambar baru di DCIM/ atau Pictures/.
         val rel = src.relativePath?.takeIf { sameFolder && (it.startsWith("DCIM/") || it.startsWith("Pictures/")) }
             ?: "Pictures/rawa/"
-        val base = src.name.substringBeforeLast('.')
         val values = ContentValues().apply {
-            put(MediaStore.Images.Media.DISPLAY_NAME, "$base.jpg")
-            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.DISPLAY_NAME, ImageFormats.outputName(src.name, fmt))
+            put(MediaStore.Images.Media.MIME_TYPE, ImageFormats.mime(fmt))
             put(MediaStore.Images.Media.RELATIVE_PATH, rel)
             src.dateTaken?.let { put(MediaStore.Images.Media.DATE_TAKEN, it) }
             put(MediaStore.Images.Media.IS_PENDING, 1)
@@ -569,13 +632,13 @@ class RawConverter(
     }
 
     /** Tulis JPG ke folder pilihan (SAF). Penyedia dokumen menambah " (1)" bila nama sudah ada. */
-    private fun saveToFolder(file: File, src: Source): String {
+    private fun saveToFolder(file: File, src: Source, fmt: String): String {
         val tree = savedFolderTree()
             ?: throw IllegalStateException("Folder tujuan tidak bisa diakses. Pilih ulang folder.")
         val cr = context.contentResolver
-        val name = src.name.substringBeforeLast('.') + ".jpg"
+        val name = ImageFormats.outputName(src.name, fmt)
         val doc = try {
-            DocumentsContract.createDocument(cr, folderDocUri(tree), "image/jpeg", name)
+            DocumentsContract.createDocument(cr, folderDocUri(tree), ImageFormats.mime(fmt), name)
         } catch (t: Throwable) {
             null
         } ?: throw IllegalStateException("Gagal membuat file di folder tujuan. Pilih ulang folder.")
@@ -586,6 +649,29 @@ class RawConverter(
             try { DocumentsContract.deleteDocument(cr, doc) } catch (_: Throwable) {}
             throw t
         }
+        scanIntoGallery(doc, ImageFormats.mime(fmt))
         return ""
+    }
+
+    /**
+     * Penyimpanan lokal (internal atau kartu SD): minta MediaScanner mengindeks file supaya
+     * langsung tampil di galeri. Penyedia lain (Drive, dll.) dilewati.
+     */
+    @Suppress("DEPRECATION")
+    private fun scanIntoGallery(doc: Uri, mime: String) {
+        if (doc.authority != "com.android.externalstorage.documents") return
+        try {
+            val id = DocumentsContract.getDocumentId(doc) // "primary:Pictures/a.jpg" / "1A2B-3C4D:DCIM/a.jpg"
+            val volume = id.substringBefore(':')
+            val rel = id.substringAfter(':', "")
+            val root = if (volume.equals("primary", ignoreCase = true)) {
+                Environment.getExternalStorageDirectory().path
+            } else {
+                "/storage/$volume"
+            }
+            MediaScannerConnection.scanFile(context, arrayOf("$root/$rel"), arrayOf(mime), null)
+        } catch (_: Throwable) {
+            // Hanya agar cepat tampil di galeri; file tetap tersimpan.
+        }
     }
 }
