@@ -75,7 +75,27 @@ void main() {
       fake.convertResults['9'] = {'newId': 'n9', 'inBytes': 100, 'outBytes': 30};
       final r = await RawNative.convert('9', quality: 77, maxSide: 2048);
       expect((r.newId, r.inBytes, r.outBytes), ('n9', 100, 30));
-      expect(fake.callsOf('convert').single.arguments, {'id': '9', 'quality': 77, 'maxSide': 2048});
+      expect(fake.callsOf('convert').single.arguments,
+          {'id': '9', 'quality': 77, 'maxSide': 2048, 'target': 'gallery'});
+    });
+
+    test('convert sends the chosen save target', () async {
+      for (final t in SaveTarget.values) {
+        await RawNative.convert('1', quality: 85, maxSide: 0, target: t);
+      }
+      expect(fake.callsOf('convert').map((c) => (c.arguments as Map)['target']), ['gallery', 'sameFolder', 'folder']);
+    });
+
+    test('pickFolder returns name or null; savedFolder swallows errors', () async {
+      fake.pickFolderResult = 'Kompres';
+      expect(await RawNative.pickFolder(), 'Kompres');
+      fake.pickFolderResult = null;
+      expect(await RawNative.pickFolder(), isNull);
+      expect(await RawNative.savedFolder(), 'Kompres');
+
+      final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(nativeChannel, (_) async => throw PlatformException(code: 'x'));
+      expect(await RawNative.savedFolder(), isNull);
     });
 
     test('convert tolerates missing fields', () async {

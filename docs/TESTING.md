@@ -6,7 +6,7 @@ Semua test otomatis berjalan di Mac tanpa simulator/emulator.
 
 | Lapisan | Perintah | Isi |
 |---|---|---|
-| Dart (logika + UI) | `flutter test` | 54 test: beranda (navigasi ke 2 fitur), SortPage (izin, kosong, error, geser kanan/kiri, tombol, urungkan, tinjau sebelum hapus, batal hapus per foto, hapus sebagian/gagal, konfirmasi keluar, paging tanpa lompat setelah hapus), format ukuran, parsing channel, alur CompressPage (izin, kosong, error, pilih/pilih semua, dialog, opsi kualitas & ukuran, switch hapus, rescan) dan ProcessPage (sukses, gagal sebagian, nama file kembar, semua gagal, hapus dibatalkan/sebagian/error, jalur Android 9 vs 10+, tombol Hentikan, tombol back diblokir) |
+| Dart (logika + UI) | `flutter test` | 63 test: lokasi simpan (galeri default, folder sama khusus Android, pilih/ganti/ingat folder, batal & error pemilih), beranda (navigasi ke 2 fitur), SortPage (izin, kosong, error, geser kanan/kiri, tombol, urungkan, tinjau sebelum hapus, batal hapus per foto, hapus sebagian/gagal, konfirmasi keluar, paging tanpa lompat setelah hapus), format ukuran, parsing channel, alur CompressPage (izin, kosong, error, pilih/pilih semua, dialog, opsi kualitas & ukuran, switch hapus, rescan) dan ProcessPage (sukses, gagal sebagian, nama file kembar, semua gagal, hapus dibatalkan/sebagian/error, jalur Android 9 vs 10+, tombol Hentikan, tombol back diblokir) |
 | Parser CR3 (Android) | `cd android && ./gradlew :app:testDebugUnitTest` | 15 JUnit: CR3 sintetis (co64/stco, ukuran sampel seragam, header box 64-bit, TIFF II/MM, format nilai EXIF untuk ExifInterface, GPS, trak pertama saja, file rusak/terpotong/bukan CR3) |
 | Encoder iOS | `tool/test_ios_encoder.sh` | DNG sintetis: ukuran asli, maxSide, tanpa upscale, orientasi 6 diterapkan ke pixel, kualitas vs ukuran file, quality di luar rentang, file rusak |
 | Static | `flutter analyze` | tanpa issue |
@@ -41,6 +41,7 @@ Pakai 1–2 foto dulu dengan **"Hapus RAW asli" OFF**.
 - [ ] **A10 Hentikan**: pilih 4, tekan *Hentikan* setelah foto pertama → hanya yang sudah jadi JPG yang RAW-nya dihapus.
 - [ ] **A11 Putar layar / pindah aplikasi** saat proses: proses tetap berjalan sampai selesai.
 - [ ] **A12 Format lain** (DNG dari HP, CR2/NEF/ARW bila ada): terkonversi atau muncul pesan gagal yang jelas, RAW tidak dihapus.
+- [ ] **A13 Simpan ke**: default "Galeri internal" → JPG di `Pictures/rawa`, tampil di galeri. "Folder yang sama dengan RAW" → di samping RAW (Android 10+: hanya bila RAW di DCIM/Pictures). "Pilih folder…" (mis. kartu SD) → JPG di folder itu; folder diingat setelah aplikasi ditutup.
 
 ### iOS
 
@@ -51,6 +52,7 @@ Pakai 1–2 foto dulu dengan **"Hapus RAW asli" OFF**.
 - [ ] **I5 Tolak dialog hapus**: muncul "N RAW tidak dihapus… JPG hasil tetap tersimpan".
 - [ ] **I6 iCloud**: RAW yang hanya ada di iCloud diunduh lalu dikonversi.
 - [ ] **I7 Pasangan RAW+JPEG** di satu aset: hapus menghapus keduanya (perilaku Photos) — pastikan dapat diterima.
+- [ ] **I8 Simpan ke folder**: "Pilih folder…" → pilih folder di app Files (On My iPhone/iCloud Drive); JPG muncul di sana, tidak di Photos; nama kembar jadi `… (1).jpg`.
 
 ### Sortir Foto (iOS & Android)
 

@@ -161,7 +161,10 @@ void main() {
     expect(find.byType(ProcessPage), findsOneWidget);
     // Order follows the library list, not the tap order.
     expect(fake.callsOf('convert').map((c) => c.arguments),
-        [{'id': '1', 'quality': 85, 'maxSide': 0}, {'id': '3', 'quality': 85, 'maxSide': 0}]);
+        [
+          {'id': '1', 'quality': 85, 'maxSide': 0, 'target': 'gallery'},
+          {'id': '3', 'quality': 85, 'maxSide': 0, 'target': 'gallery'},
+        ]);
     expect((fake.callsOf('deleteWithIds').single.arguments as Map)['ids'], ['1', '3']);
 
     fake.photos = [photo('2', 'B.CR3', 20 * _mb)];
@@ -208,5 +211,105 @@ void main() {
     await tester.pumpAndSettle();
     expect(fake.callsOf('convert'), hasLength(1));
     expect(fake.callsOf('deleteWithIds'), isEmpty);
+  });
+
+  group('save location', () {
+    Future<void> openTargets(WidgetTester tester) async {
+      await tester.tap(find.byKey(const ValueKey('save-target')));
+      await tester.pumpAndSettle();
+    }
+
+    Future<Map> convertOne(WidgetTester tester) async {
+      await tester.tap(_tile('CR3 · 10.0 MB'));
+      await tester.pump();
+      await tester.tap(find.text('Kompres 1 foto (10.0 MB)'));
+      await tester.pumpAndSettle();
+      final dialog = tester.widget<Text>(find.descendant(of: find.byType(AlertDialog), matching: find.byType(Text)).at(1));
+      await tester.tap(find.text('Mulai'));
+      await tester.pumpAndSettle();
+      return {'dialog': dialog.data, 'args': fake.callsOf('convert').single.arguments};
+    }
+
+    testWidgets('defaults to internal gallery', (tester) async {
+      fake.photos = [photo('1', 'A.CR3', 10 * _mb)];
+      await _pumpCompress(tester);
+      expect(find.text('Galeri internal'), findsOneWidget);
+      final r = await convertOne(tester);
+      expect(r['dialog'], contains('Disimpan ke: Galeri internal.'));
+      expect((r['args'] as Map)['target'], 'gallery');
+    });
+
+    testWidgets('same-folder option only on Android', (tester) async {
+      fake.photos = [photo('1', 'A.CR3', 10 * _mb)];
+      await _pumpCompress(tester);
+      await openTargets(tester);
+      expect(find.text('Folder yang sama dengan RAW'), findsNothing);
+      expect(find.text('Pilih folder…'), findsOneWidget);
+    });
+
+    testWidgets('Android: same folder is sent to native', (tester) async {
+      RawNative.debugIsAndroid = true;
+      fake.photos = [photo('1', 'A.CR3', 10 * _mb)];
+      await _pumpCompress(tester);
+      await openTargets(tester);
+      await tester.tap(find.text('Folder yang sama dengan RAW').last);
+      await tester.pumpAndSettle();
+      final r = await convertOne(tester);
+      expect((r['args'] as Map)['target'], 'sameFolder');
+    });
+
+    testWidgets('cancelled folder picker keeps gallery', (tester) async {
+      fake.photos = [photo('1', 'A.CR3', 10 * _mb)];
+      await _pumpCompress(tester);
+      await openTargets(tester);
+      await tester.tap(find.text('Pilih folder…').last);
+      await tester.pumpAndSettle();
+      expect(fake.callsOf('pickFolder'), hasLength(1));
+      expect(find.text('Galeri internal'), findsOneWidget);
+      expect(find.byTooltip('Ganti folder'), findsNothing);
+    });
+
+    testWidgets('picked folder is used and can be changed', (tester) async {
+      fake.photos = [photo('1', 'A.CR3', 10 * _mb)];
+      fake.pickFolderResult = 'Kompres';
+      await _pumpCompress(tester);
+      await openTargets(tester);
+      await tester.tap(find.text('Pilih folder…').last);
+      await tester.pumpAndSettle();
+      expect(find.text('Folder: Kompres'), findsOneWidget);
+
+      fake.pickFolderResult = 'Arsip';
+      await tester.tap(find.byTooltip('Ganti folder'));
+      await tester.pumpAndSettle();
+      expect(find.text('Folder: Arsip'), findsOneWidget);
+
+      final r = await convertOne(tester);
+      expect(r['dialog'], contains('Disimpan ke: Folder: Arsip.'));
+      expect((r['args'] as Map)['target'], 'folder');
+    });
+
+    testWidgets('remembered folder is offered without opening the picker', (tester) async {
+      fake.photos = [photo('1', 'A.CR3', 10 * _mb)];
+      fake.savedFolder = 'Lama';
+      await _pumpCompress(tester);
+      expect(find.text('Galeri internal'), findsOneWidget, reason: 'default stays gallery');
+      await openTargets(tester);
+      await tester.tap(find.text('Folder: Lama').last);
+      await tester.pumpAndSettle();
+      expect(fake.callsOf('pickFolder'), isEmpty);
+      final r = await convertOne(tester);
+      expect((r['args'] as Map)['target'], 'folder');
+    });
+
+    testWidgets('picker error shows message and keeps gallery', (tester) async {
+      fake.photos = [photo('1', 'A.CR3', 10 * _mb)];
+      fake.pickFolderResult = PlatformException(code: 'no_picker', message: 'Pemilih folder tidak tersedia');
+      await _pumpCompress(tester);
+      await openTargets(tester);
+      await tester.tap(find.text('Pilih folder…').last);
+      await tester.pumpAndSettle();
+      expect(find.text('Pemilih folder tidak tersedia'), findsOneWidget);
+      expect(find.text('Galeri internal'), findsOneWidget);
+    });
   });
 }

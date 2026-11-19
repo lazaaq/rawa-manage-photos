@@ -65,7 +65,7 @@ void main() {
     expect(find.text('Selesai'), findsOneWidget);
     expect(find.text('3 foto diproses'), findsOneWidget);
     expect(fake.callsOf('convert').map((c) => (c.arguments as Map)['id']), ['1', '2', '3']);
-    expect(fake.callsOf('convert').first.arguments, {'id': '1', 'quality': 85, 'maxSide': 4096});
+    expect(fake.callsOf('convert').first.arguments, {'id': '1', 'quality': 85, 'maxSide': 4096, 'target': 'gallery'});
     _expectStat('Berhasil', '3');
     _expectStat('Gagal', '0');
     _expectStat('Ukuran RAW', '30.0 MB');

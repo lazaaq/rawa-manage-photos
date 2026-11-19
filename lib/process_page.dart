@@ -15,12 +15,14 @@ class ProcessPage extends StatefulWidget {
     required this.quality,
     required this.maxSide,
     required this.deleteOriginal,
+    this.target = SaveTarget.gallery,
   });
 
   final List<RawPhoto> items;
   final int quality;
   final int maxSide;
   final bool deleteOriginal;
+  final SaveTarget target;
 
   @override
   State<ProcessPage> createState() => _ProcessPageState();
@@ -48,7 +50,12 @@ class _ProcessPageState extends State<ProcessPage> {
     for (final p in widget.items) {
       if (_cancel) break;
       try {
-        final r = await RawNative.convert(p.id, quality: widget.quality, maxSide: widget.maxSide);
+        final r = await RawNative.convert(
+          p.id,
+          quality: widget.quality,
+          maxSide: widget.maxSide,
+          target: widget.target,
+        );
         _ok.add(p);
         _inBytes += r.inBytes > 0 ? r.inBytes : p.size;
         _outBytes += r.outBytes;

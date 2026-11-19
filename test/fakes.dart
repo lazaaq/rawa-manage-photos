@@ -29,6 +29,12 @@ class FakePlatform {
   /// Native deleteLegacy result (Android 9 path).
   List<String>? legacyDeleteResult;
 
+  /// Name returned by `savedFolder` (folder remembered from an earlier pick).
+  String? savedFolder;
+
+  /// `pickFolder` answer: a folder name, null (cancelled) or a [PlatformException].
+  Object? pickFolderResult;
+
   List<MethodCall> callsOf(String method) => calls.where((c) => c.method == method).toList();
 
   void install() {
@@ -59,6 +65,13 @@ class FakePlatform {
         return null;
       case 'deleteLegacy':
         return legacyDeleteResult;
+      case 'savedFolder':
+        return savedFolder;
+      case 'pickFolder':
+        final r = pickFolderResult;
+        if (r is PlatformException) throw r;
+        if (r is String) savedFolder = r;
+        return r;
     }
     throw MissingPluginException(call.method);
   }

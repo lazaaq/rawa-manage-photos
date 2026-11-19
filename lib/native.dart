@@ -27,6 +27,18 @@ class ConvertResult {
 }
 
 /// Jembatan ke converter native (iOS: Core Image, Android: Skia/MediaStore).
+/// Tujuan penyimpanan JPG hasil kompresi.
+enum SaveTarget {
+  /// iOS: Photos. Android: Pictures/rawa di penyimpanan internal.
+  gallery,
+
+  /// Android saja: folder yang sama dengan RAW (Android 10+: hanya bila di DCIM/ atau Pictures/).
+  sameFolder,
+
+  /// Folder pilihan pengguna (app Files di iOS; folder mana pun termasuk kartu SD di Android).
+  folder,
+}
+
 class RawNative {
   static const _ch = MethodChannel('raw_compressor/native');
 
@@ -36,23 +48,43 @@ class RawNative {
 
   static bool get _isAndroid => debugIsAndroid ?? Platform.isAndroid;
 
+  static bool get isAndroid => _isAndroid;
+
   static Future<List<RawPhoto>> scanRaw() async {
     final list = await _ch.invokeListMethod<Map<dynamic, dynamic>>('scanRaw') ?? [];
     return list.map(RawPhoto.fromMap).toList();
   }
 
-  /// Konversi RAW ke JPEG dan simpan sebagai foto baru. RAW asli tidak dihapus.
+  /// Konversi RAW ke JPEG dan simpan di [target]. RAW asli tidak dihapus.
   /// [maxSide] 0 = resolusi asli.
-  static Future<ConvertResult> convert(String id, {required int quality, required int maxSide}) async {
+  static Future<ConvertResult> convert(
+    String id, {
+    required int quality,
+    required int maxSide,
+    SaveTarget target = SaveTarget.gallery,
+  }) async {
     final m = await _ch.invokeMapMethod<String, dynamic>(
       'convert',
-      {'id': id, 'quality': quality, 'maxSide': maxSide},
+      {'id': id, 'quality': quality, 'maxSide': maxSide, 'target': target.name},
     );
     return ConvertResult(
       newId: m?['newId'] as String? ?? '',
       inBytes: (m?['inBytes'] as num?)?.toInt() ?? 0,
       outBytes: (m?['outBytes'] as num?)?.toInt() ?? 0,
     );
+  }
+
+  /// Buka pemilih folder sistem. Mengembalikan nama folder, atau null bila dibatalkan.
+  /// Folder diingat native untuk [SaveTarget.folder].
+  static Future<String?> pickFolder() => _ch.invokeMethod<String>('pickFolder');
+
+  /// Nama folder tersimpan yang masih bisa ditulis, atau null.
+  static Future<String?> savedFolder() async {
+    try {
+      return await _ch.invokeMethod<String>('savedFolder');
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Thumbnail dari native (Android), untuk file yang tidak dikenali galeri, mis. CR3.

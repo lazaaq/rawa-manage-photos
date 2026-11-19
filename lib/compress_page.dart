@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 
@@ -32,11 +33,43 @@ class _CompressPageState extends State<CompressPage> {
   int _quality = 85;
   int _maxSide = 4096;
   bool _deleteOriginal = true;
+  SaveTarget _target = SaveTarget.gallery;
+  String? _folderName;
 
   @override
   void initState() {
     super.initState();
     _init();
+    RawNative.savedFolder().then((name) {
+      if (mounted && name != null) setState(() => _folderName = name);
+    });
+  }
+
+  String _targetLabel(SaveTarget t) => switch (t) {
+        SaveTarget.gallery => 'Galeri internal',
+        SaveTarget.sameFolder => 'Folder yang sama dengan RAW',
+        SaveTarget.folder => _folderName == null ? 'Pilih folder…' : 'Folder: $_folderName',
+      };
+
+  /// Pilih folder tujuan; target pindah ke folder hanya bila pengguna memilih.
+  Future<void> _pickFolder() async {
+    try {
+      final name = await RawNative.pickFolder();
+      if (name == null || !mounted) return;
+      setState(() {
+        _folderName = name;
+        _target = SaveTarget.folder;
+      });
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message ?? 'Gagal memilih folder')));
+    }
+  }
+
+  Future<void> _onTargetChanged(SaveTarget? t) async {
+    if (t == null || t == _target) return;
+    if (t == SaveTarget.folder && _folderName == null) return _pickFolder();
+    setState(() => _target = t);
   }
 
   Future<void> _init() async {
@@ -100,7 +133,8 @@ class _CompressPageState extends State<CompressPage> {
         title: Text('Kompres ${items.length} foto?'),
         content: Text(
           'Setiap foto RAW akan dikonversi ke JPG '
-          '(kualitas $_quality, ukuran ${kSizeOptions[_maxSide]}).\n\n'
+          '(kualitas $_quality, ukuran ${kSizeOptions[_maxSide]}).\n'
+          'Disimpan ke: ${_targetLabel(_target)}.\n\n'
           '${_deleteOriginal ? 'Setelah selesai, file RAW asli akan DIHAPUS. '
               'iOS: konfirmasi sekali, lalu masuk album "Baru Dihapus" (30 hari).\n'
               'Android 10+: konfirmasi sekali, lalu terhapus permanen.\n'
@@ -121,6 +155,7 @@ class _CompressPageState extends State<CompressPage> {
         quality: _quality,
         maxSide: _maxSide,
         deleteOriginal: _deleteOriginal,
+        target: _target,
       ),
     ));
     _selected.clear();
@@ -233,6 +268,25 @@ class _CompressPageState extends State<CompressPage> {
                   onChanged: (v) => setState(() => _maxSide = v ?? _maxSide),
                 ),
               ),
+            ]),
+            Row(children: [
+              const Text('Simpan ke'),
+              const SizedBox(width: 12),
+              Expanded(
+                child: DropdownButton<SaveTarget>(
+                  key: const ValueKey('save-target'),
+                  isExpanded: true,
+                  value: _target,
+                  items: [
+                    for (final t in SaveTarget.values)
+                      if (t != SaveTarget.sameFolder || RawNative.isAndroid)
+                        DropdownMenuItem(value: t, child: Text(_targetLabel(t), overflow: TextOverflow.ellipsis)),
+                  ],
+                  onChanged: _onTargetChanged,
+                ),
+              ),
+              if (_target == SaveTarget.folder)
+                IconButton(tooltip: 'Ganti folder', icon: const Icon(Icons.folder_open), onPressed: _pickFolder),
             ]),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,

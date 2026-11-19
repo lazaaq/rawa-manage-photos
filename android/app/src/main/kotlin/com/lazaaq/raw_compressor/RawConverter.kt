@@ -1,8 +1,10 @@
 package com.lazaaq.raw_compressor
 
+import android.app.Activity
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
@@ -14,6 +16,7 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import androidx.exifinterface.media.ExifInterface
 import io.flutter.plugin.common.MethodCall
@@ -32,22 +35,37 @@ import kotlin.math.roundToInt
  * Channel `raw_compressor/native`:
  * - `scanRaw` -> [{id, name, size}]  semua file RAW yang terindeks MediaStore (termasuk
  *   folder Download, bukan hanya galeri). id = _ID tabel MediaStore.Files.
- * - `convert` {id, quality, maxSide} -> {newId, inBytes, outBytes}
- *   Decode RAW, encode JPEG (EXIF disalin), simpan ke folder yang sama bila diizinkan.
- *   File RAW asli TIDAK dihapus di sini.
+ * - `convert` {id, quality, maxSide, target} -> {newId, inBytes, outBytes}
+ *   Decode RAW, encode JPEG (EXIF disalin), simpan sesuai `target`:
+ *   `gallery` = Pictures/rawa di penyimpanan internal (tampil di galeri),
+ *   `sameFolder` = folder RAW asli (Android 10+: hanya bila di DCIM/ atau Pictures/),
+ *   `folder` = folder pilihan pengguna (Storage Access Framework, termasuk kartu SD).
+ *   newId kosong untuk `folder`. File RAW asli TIDAK dihapus di sini.
+ * - `pickFolder` -> nama folder, atau null bila dibatalkan. Izin disimpan permanen.
+ * - `savedFolder` -> nama folder terakhir yang masih bisa ditulis, atau null.
  * - `thumbnail` {id, size} -> JPEG bytes, untuk file yang tidak dikenali galeri (mis. CR3).
  * - `deleteLegacy` {ids} -> id yang benar-benar terhapus (Android 9), atau null di Android 10+
  *   (Dart lalu memakai photo_manager yang menampilkan dialog konfirmasi sistem).
  */
-class RawConverter(private val context: Context) : MethodChannel.MethodCallHandler {
+class RawConverter(
+    private val context: Context,
+    private val activity: () -> Activity?,
+) : MethodChannel.MethodCallHandler {
     private val executor = Executors.newSingleThreadExecutor()
     private val thumbExecutor = Executors.newFixedThreadPool(2)
     private val main = Handler(Looper.getMainLooper())
 
     private val isScopedStorage = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
     private val filesUri: Uri = MediaStore.Files.getContentUri("external")
+    private val prefs = context.getSharedPreferences("rawa", Context.MODE_PRIVATE)
+    private var pendingPick: MethodChannel.Result? = null
 
     companion object {
+        private const val REQ_PICK_FOLDER = 4711
+        private const val KEY_FOLDER = "saveFolderUri"
+        private const val RW_FLAGS =
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+
         private val RAW_EXTS = listOf(
             "dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf",
             "rw2", "pef", "srw", "x3f", "3fr", "iiq", "erf", "kdc", "mrw", "raw", "rwl",
@@ -84,8 +102,11 @@ class RawConverter(private val context: Context) : MethodChannel.MethodCallHandl
                     ?: return result.error("bad_args", "id wajib diisi", null)
                 val quality = call.argument<Int>("quality") ?: 85
                 val maxSide = call.argument<Int>("maxSide") ?: 0
-                run(result, executor) { convert(id, quality, maxSide) }
+                val target = call.argument<String>("target") ?: "gallery"
+                run(result, executor) { convert(id, quality, maxSide, target) }
             }
+            "pickFolder" -> pickFolder(result)
+            "savedFolder" -> run(result, thumbExecutor) { savedFolderTree()?.let(::folderName) }
             "thumbnail" -> {
                 val id = call.argument<String>("id")?.toLongOrNull()
                     ?: return result.error("bad_args", "id wajib diisi", null)
@@ -209,7 +230,7 @@ class RawConverter(private val context: Context) : MethodChannel.MethodCallHandl
 
     // ------------------------------------------------------------- convert
 
-    private fun convert(id: Long, quality: Int, maxSide: Int): Map<String, Any> {
+    private fun convert(id: Long, quality: Int, maxSide: Int, target: String): Map<String, Any> {
         val src = querySource(id)
         val tmp = File(context.cacheDir, "${UUID.randomUUID()}.jpg")
         try {
@@ -238,7 +259,11 @@ class RawConverter(private val context: Context) : MethodChannel.MethodCallHandl
             } else {
                 copyExif(src, tmp, width, height)
             }
-            val newId = insertJpeg(tmp, src)
+            val newId = when (target) {
+                "folder" -> saveToFolder(tmp, src)
+                "sameFolder" -> insertJpeg(tmp, src, sameFolder = true)
+                else -> insertJpeg(tmp, src, sameFolder = false)
+            }
             return mapOf("newId" to newId, "inBytes" to src.size, "outBytes" to tmp.length())
         } finally {
             tmp.delete()
@@ -414,13 +439,13 @@ class RawConverter(private val context: Context) : MethodChannel.MethodCallHandl
 
     // --------------------------------------------------------------- insert
 
-    private fun insertJpeg(file: File, src: Source): String =
-        if (isScopedStorage) insertJpegScoped(file, src) else insertJpegLegacy(file, src)
+    private fun insertJpeg(file: File, src: Source, sameFolder: Boolean): String =
+        if (isScopedStorage) insertJpegScoped(file, src, sameFolder) else insertJpegLegacy(file, src, sameFolder)
 
-    /** Android 9: tulis file langsung di samping RAW asli, lalu daftarkan ke MediaStore. */
+    /** Android 9: tulis file langsung (di samping RAW atau Pictures/rawa), lalu daftarkan ke MediaStore. */
     @Suppress("DEPRECATION")
-    private fun insertJpegLegacy(file: File, src: Source): String {
-        val dir = src.dataPath?.let { File(it).parentFile }?.takeIf { it.canWrite() }
+    private fun insertJpegLegacy(file: File, src: Source, sameFolder: Boolean): String {
+        val dir = src.dataPath?.takeIf { sameFolder }?.let { File(it).parentFile }?.takeIf { it.canWrite() }
             ?: File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "rawa")
                 .apply { mkdirs() }
         val base = src.name.substringBeforeLast('.')
@@ -451,10 +476,10 @@ class RawConverter(private val context: Context) : MethodChannel.MethodCallHandl
     }
 
     /** Android 10+: scoped storage via MediaStore. */
-    private fun insertJpegScoped(file: File, src: Source): String {
+    private fun insertJpegScoped(file: File, src: Source, sameFolder: Boolean): String {
         val cr = context.contentResolver
         // MediaStore hanya mengizinkan gambar baru di DCIM/ atau Pictures/.
-        val rel = src.relativePath?.takeIf { it.startsWith("DCIM/") || it.startsWith("Pictures/") }
+        val rel = src.relativePath?.takeIf { sameFolder && (it.startsWith("DCIM/") || it.startsWith("Pictures/")) }
             ?: "Pictures/rawa/"
         val base = src.name.substringBeforeLast('.')
         val values = ContentValues().apply {
@@ -475,5 +500,92 @@ class RawConverter(private val context: Context) : MethodChannel.MethodCallHandl
             throw t
         }
         return ContentUris.parseId(newUri).toString()
+    }
+
+    // ------------------------------------------------------- custom folder
+
+    private fun pickFolder(result: MethodChannel.Result) {
+        val act = activity() ?: return result.error("no_activity", "Aplikasi tidak aktif", null)
+        if (pendingPick != null) return result.error("busy", "Pemilih folder sudah terbuka", null)
+        pendingPick = result
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+            .addFlags(RW_FLAGS or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        try {
+            act.startActivityForResult(intent, REQ_PICK_FOLDER)
+        } catch (t: Throwable) {
+            pendingPick = null
+            result.error("no_picker", "Pemilih folder tidak tersedia di perangkat ini", null)
+        }
+    }
+
+    /** Dipanggil dari MainActivity. @return true bila hasil ini milik [pickFolder]. */
+    fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
+        if (requestCode != REQ_PICK_FOLDER) return false
+        val result = pendingPick ?: return true
+        pendingPick = null
+        val tree = data?.data
+        if (resultCode != Activity.RESULT_OK || tree == null) {
+            result.success(null)
+            return true
+        }
+        val cr = context.contentResolver
+        try {
+            cr.takePersistableUriPermission(tree, RW_FLAGS)
+        } catch (t: Throwable) {
+            result.error("folder_denied", "Folder ini tidak mengizinkan penyimpanan", null)
+            return true
+        }
+        // Lepas izin folder lama supaya tidak menumpuk.
+        prefs.getString(KEY_FOLDER, null)?.let(Uri::parse)?.takeIf { it != tree }?.let { old ->
+            try { cr.releasePersistableUriPermission(old, RW_FLAGS) } catch (_: Throwable) {}
+        }
+        prefs.edit().putString(KEY_FOLDER, tree.toString()).apply()
+        result.success(folderName(tree))
+        return true
+    }
+
+    /** Folder tersimpan yang izin tulisnya masih ada. */
+    private fun savedFolderTree(): Uri? {
+        val tree = prefs.getString(KEY_FOLDER, null)?.let(Uri::parse) ?: return null
+        val granted = context.contentResolver.persistedUriPermissions.any {
+            it.uri == tree && it.isWritePermission
+        }
+        return tree.takeIf { granted }
+    }
+
+    private fun folderDocUri(tree: Uri): Uri =
+        DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+
+    private fun folderName(tree: Uri): String {
+        val fallback = DocumentsContract.getTreeDocumentId(tree).substringAfter(':').substringAfterLast('/')
+            .ifEmpty { "Penyimpanan" }
+        return try {
+            context.contentResolver.query(
+                folderDocUri(tree), arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null,
+            )?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: fallback
+        } catch (_: Throwable) {
+            fallback
+        }
+    }
+
+    /** Tulis JPG ke folder pilihan (SAF). Penyedia dokumen menambah " (1)" bila nama sudah ada. */
+    private fun saveToFolder(file: File, src: Source): String {
+        val tree = savedFolderTree()
+            ?: throw IllegalStateException("Folder tujuan tidak bisa diakses. Pilih ulang folder.")
+        val cr = context.contentResolver
+        val name = src.name.substringBeforeLast('.') + ".jpg"
+        val doc = try {
+            DocumentsContract.createDocument(cr, folderDocUri(tree), "image/jpeg", name)
+        } catch (t: Throwable) {
+            null
+        } ?: throw IllegalStateException("Gagal membuat file di folder tujuan. Pilih ulang folder.")
+        try {
+            cr.openOutputStream(doc)?.use { out -> file.inputStream().use { it.copyTo(out) } }
+                ?: throw IllegalStateException("Gagal menulis JPG ke folder tujuan")
+        } catch (t: Throwable) {
+            try { DocumentsContract.deleteDocument(cr, doc) } catch (_: Throwable) {}
+            throw t
+        }
+        return ""
     }
 }
