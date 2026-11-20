@@ -38,6 +38,17 @@ android {
         versionName = flutter.versionName
     }
 
+    // Store native libs compressed: one APK carries both arm32 and arm64 engines at a much
+    // smaller download size; the installer extracts only the one the phone uses.
+    // Phones only (build with --target-platform android-arm,android-arm64). Plugins still ship
+    // x86 libs; without the matching Flutter engine an x86 device would pick that ABI and crash.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            excludes += listOf("lib/x86/**", "lib/x86_64/**")
+        }
+    }
+
     testOptions {
         unitTests.all {
             // Optional: folder with real .CR3 files for RealSamples tests (skipped when unset).
