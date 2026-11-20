@@ -14,7 +14,8 @@ Pilihan kualitas, ukuran, dan lokasi simpan diingat per fitur.
 
 ## Download (Android)
 
-1. Buka halaman [Releases](../../releases/latest) dan download `rawa.apk`.
+1. Buka halaman [Releases](../../releases/latest) dan download `rawa.apk` (untuk hampir semua HP sejak 2017).
+   Bila muncul "Aplikasi tidak terpasang" di HP lama, pakai `rawa-32bit.apk`.
 2. Buka file tersebut di HP. Bila diminta, izinkan "Instal aplikasi tidak dikenal" untuk browser atau file manager.
 3. Bila Play Protect memberi peringatan, pilih **Tetap instal**. Peringatan ini muncul karena aplikasi tidak berasal dari Play Store.
 
