@@ -71,10 +71,7 @@ class RawConverter(
         private const val RW_FLAGS =
             Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
 
-        private val RAW_EXTS = listOf(
-            "dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf",
-            "rw2", "pef", "srw", "x3f", "3fr", "iiq", "erf", "kdc", "mrw", "raw", "rwl",
-        )
+        private val RAW_EXTS = ImageFormats.RAW_EXTS.sorted()
 
         private val EXIF_TAGS = listOf(
             ExifInterface.TAG_DATETIME, ExifInterface.TAG_DATETIME_ORIGINAL,
@@ -137,7 +134,7 @@ class RawConverter(
                 val value = block()
                 main.post { result.success(value) }
             } catch (t: Throwable) {
-                main.post { result.error("convert_failed", t.message ?: t.javaClass.simpleName, null) }
+                main.post { result.error("convert_failed", ImageFormats.errorMessage(t), null) }
             }
         }
     }
@@ -191,7 +188,7 @@ class RawConverter(
         )?.use { c ->
             while (c.moveToNext()) {
                 val name = c.getString(1) ?: c.getString(3)?.substringAfterLast('/') ?: continue
-                if (name.substringAfterLast('.', "").lowercase() in RAW_EXTS) continue
+                if (ImageFormats.isRaw(name)) continue
                 out.add(mapOf("id" to c.getLong(0).toString(), "name" to name, "size" to c.getLong(2)))
             }
         }
@@ -510,12 +507,7 @@ class RawConverter(
         val dir = src.dataPath?.takeIf { sameFolder }?.let { File(it).parentFile }?.takeIf { it.canWrite() }
             ?: File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "rawa")
                 .apply { mkdirs() }
-        val first = ImageFormats.outputName(src.name, fmt)
-        val base = first.substringBeforeLast('.')
-        val ext = ImageFormats.extension(fmt)
-        var target = File(dir, first)
-        var n = 1
-        while (target.exists()) target = File(dir, "$base (${n++}).$ext")
+        val target = File(dir, ImageFormats.uniqueName(ImageFormats.outputName(src.name, fmt)) { File(dir, it).exists() })
         file.copyTo(target)
 
         val values = ContentValues().apply {
@@ -661,15 +653,10 @@ class RawConverter(
     private fun scanIntoGallery(doc: Uri, mime: String) {
         if (doc.authority != "com.android.externalstorage.documents") return
         try {
-            val id = DocumentsContract.getDocumentId(doc) // "primary:Pictures/a.jpg" / "1A2B-3C4D:DCIM/a.jpg"
-            val volume = id.substringBefore(':')
-            val rel = id.substringAfter(':', "")
-            val root = if (volume.equals("primary", ignoreCase = true)) {
-                Environment.getExternalStorageDirectory().path
-            } else {
-                "/storage/$volume"
-            }
-            MediaScannerConnection.scanFile(context, arrayOf("$root/$rel"), arrayOf(mime), null)
+            val path = ImageFormats.documentPath(
+                DocumentsContract.getDocumentId(doc), Environment.getExternalStorageDirectory().path,
+            ) ?: return
+            MediaScannerConnection.scanFile(context, arrayOf(path), arrayOf(mime), null)
         } catch (_: Throwable) {
             // Hanya agar cepat tampil di galeri; file tetap tersimpan.
         }

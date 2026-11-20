@@ -41,7 +41,7 @@ class LandingPage extends StatelessWidget {
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text('rawa', style: theme.textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold)),
-                Text('Rapikan galeri foto Anda', style: theme.textTheme.bodyMedium),
+                Text('dibuat oleh lana, untuk awa', style: theme.textTheme.bodyMedium),
               ]),
             ),
           ]),

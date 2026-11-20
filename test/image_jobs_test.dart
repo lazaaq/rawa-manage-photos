@@ -135,6 +135,37 @@ void main() {
       expect(dialog, isNot(contains('Live Photo')));
     });
 
+    testWidgets('Android 9: originals deleted natively, no system dialog path', (tester) async {
+      RawNative.debugIsAndroid = true;
+      fake.legacyDeleteResult = ['1', '2'];
+      await _pump(tester, PhotoJob.compress);
+      await _start(tester, ['HEIC · 3.0 MB', 'JPG · 5.0 MB']);
+      expect((fake.callsOf('deleteLegacy').single.arguments as Map)['ids'], ['1', '2']);
+      expect(fake.callsOf('deleteWithIds'), isEmpty);
+      _expectStat('Asli dihapus', '2');
+    });
+
+    testWidgets('Android 10+: falls back to system delete request', (tester) async {
+      RawNative.debugIsAndroid = true;
+      fake.legacyDeleteResult = null;
+      await _pump(tester, PhotoJob.compress);
+      await _start(tester, ['PNG · 1.0 MB']);
+      expect(fake.callsOf('deleteLegacy'), hasLength(1));
+      expect((fake.callsOf('deleteWithIds').single.arguments as Map)['ids'], ['3']);
+    });
+
+    testWidgets('Android: conversion error (e.g. out of memory) is listed, original kept', (tester) async {
+      RawNative.debugIsAndroid = true;
+      fake.legacyDeleteResult = ['1'];
+      fake.convertResults['2'] = PlatformException(
+          code: 'convert_failed', message: 'Foto terlalu besar untuk memori perangkat. Pilih ukuran yang lebih kecil.');
+      await _pump(tester, PhotoJob.compress);
+      await _start(tester, ['HEIC · 3.0 MB', 'JPG · 5.0 MB']);
+      expect(find.text('Foto terlalu besar untuk memori perangkat. Pilih ukuran yang lebih kecil.'), findsOneWidget);
+      expect((fake.callsOf('deleteLegacy').single.arguments as Map)['ids'], ['1']);
+      _expectStat('Gagal', '1');
+    });
+
     testWidgets('delete failure names photos, not RAW', (tester) async {
       fake.deleteResult = [];
       await _pump(tester, PhotoJob.compress);

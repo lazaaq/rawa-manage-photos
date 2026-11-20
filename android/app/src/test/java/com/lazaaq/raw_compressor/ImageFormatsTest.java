@@ -1,6 +1,13 @@
 package com.lazaaq.raw_compressor;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 
 import org.junit.Test;
 
@@ -48,5 +55,47 @@ public class ImageFormatsTest {
         assertEquals("noext.webp", ImageFormats.outputName("noext", "webp"));
         assertEquals(".hidden.jpg", ImageFormats.outputName(".hidden", "jpeg"));
         assertEquals("photo.jpg", ImageFormats.outputName("", "jpeg"));
+    }
+
+    @Test
+    public void rawDetectionIsCaseInsensitiveAndExcludesNormalPhotos() {
+        assertTrue(ImageFormats.isRaw("3U2A6708.CR3"));
+        assertTrue(ImageFormats.isRaw("a.dng"));
+        assertTrue(ImageFormats.isRaw("x.NEF"));
+        assertFalse(ImageFormats.isRaw("IMG_1.HEIC"));
+        assertFalse(ImageFormats.isRaw("a.jpg"));
+        assertFalse(ImageFormats.isRaw("raw"));
+        assertFalse(ImageFormats.isRaw(null));
+    }
+
+    @Test
+    public void documentPathForInternalAndSdCard() {
+        String root = "/storage/emulated/0";
+        assertEquals("/storage/emulated/0/Pictures/a.jpg", ImageFormats.documentPath("primary:Pictures/a.jpg", root));
+        assertEquals("/storage/emulated/0/x.jpg", ImageFormats.documentPath("PRIMARY:x.jpg", root));
+        assertEquals("/storage/1A2B-3C4D/DCIM/rawa/a (1).jpg",
+                ImageFormats.documentPath("1A2B-3C4D:DCIM/rawa/a (1).jpg", root));
+        assertEquals("/storage/1A2B-3C4D", ImageFormats.documentPath("1A2B-3C4D:", root));
+        assertNull(ImageFormats.documentPath("no-colon", root));
+        assertNull(ImageFormats.documentPath(":x", root));
+        assertNull(ImageFormats.documentPath(null, root));
+    }
+
+    @Test
+    public void uniqueNameAddsCounterBeforeExtension() {
+        Set<String> taken = new HashSet<>(Arrays.asList("a.jpg", "a (1).jpg", "b"));
+        assertEquals("c.jpg", ImageFormats.uniqueName("c.jpg", taken::contains));
+        assertEquals("a (2).jpg", ImageFormats.uniqueName("a.jpg", taken::contains));
+        assertEquals("b (1)", ImageFormats.uniqueName("b", taken::contains));
+        assertEquals("my.photo (1).png",
+                ImageFormats.uniqueName("my.photo.png", n -> n.equals("my.photo.png")));
+    }
+
+    @Test
+    public void errorMessages() {
+        assertEquals("Foto terlalu besar untuk memori perangkat. Pilih ukuran yang lebih kecil.",
+                ImageFormats.errorMessage(new OutOfMemoryError("Failed to allocate 192000000 bytes")));
+        assertEquals("Gagal menulis JPG", ImageFormats.errorMessage(new IllegalStateException("Gagal menulis JPG")));
+        assertEquals("SecurityException", ImageFormats.errorMessage(new SecurityException()));
     }
 }
