@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:raw_compressor/gallery_cache.dart';
 
 const nativeChannel = MethodChannel('raw_compressor/native');
 const photoManagerChannel = MethodChannel('com.fluttercandies/photo_manager');
@@ -18,6 +19,9 @@ class FakePlatform {
   /// Non-RAW gallery photos returned by `scanImages`.
   List<Map<String, Object?>> images = [];
   PlatformException? scanError;
+
+  /// Optional gate: scanRaw/scanImages wait for this before answering.
+  Future<void> Function()? scanGate;
 
   /// Per-id convert result. Missing id -> default success map. A [PlatformException] value is thrown.
   final Map<String, Object> convertResults = {};
@@ -41,6 +45,8 @@ class FakePlatform {
   List<MethodCall> callsOf(String method) => calls.where((c) => c.method == method).toList();
 
   void install() {
+    GalleryCache.reset();
+    GalleryCache.directory = () async => throw MissingPluginException('no disk cache in tests');
     final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
     messenger.setMockMethodCallHandler(nativeChannel, _native);
     messenger.setMockMethodCallHandler(photoManagerChannel, _photoManager);
@@ -56,9 +62,11 @@ class FakePlatform {
     calls.add(call);
     switch (call.method) {
       case 'scanRaw':
+        if (scanGate != null) await scanGate!();
         if (scanError != null) throw scanError!;
         return photos;
       case 'scanImages':
+        if (scanGate != null) await scanGate!();
         if (scanError != null) throw scanError!;
         return images;
       case 'convert':

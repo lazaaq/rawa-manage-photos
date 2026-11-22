@@ -7,6 +7,7 @@ Aplikasi Android dan iOS untuk merapikan galeri foto. Semua diproses di perangka
 - **Kompres RAW**: ubah foto RAW (CR3, CR2, NEF, ARW, DNG, …) menjadi JPG yang jauh lebih kecil.
 - **Kompres Foto**: kompres ulang foto galeri biasa (JPG, HEIC, PNG, …).
 - **Ubah Format**: ubah format foto, misalnya HEIC ke JPG.
+- **Cari Duplikat**: temukan foto kembar (kiriman ulang, salinan) dan foto mirip (beruntun), simpan yang terbaik, hapus sisanya.
 - **Sortir Foto**: geser kanan untuk simpan, geser kiri untuk hapus. Ada tombol favorit, dan progres diingat.
 
 Hasil bisa disimpan ke galeri, folder yang sama dengan aslinya (Android), atau folder pilihan.

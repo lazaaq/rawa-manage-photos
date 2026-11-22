@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 
+import 'gallery_cache.dart';
 import 'jobs.dart';
 import 'native.dart';
 import 'process_page.dart';
@@ -33,6 +34,9 @@ class _CompressPageState extends State<CompressPage> {
 
   PermissionState? _perm;
   bool _loading = true;
+
+  /// Daftar dari cache sedang diperbarui di latar belakang.
+  bool _refreshing = false;
   String? _error;
 
   List<RawPhoto> _photos = [];
@@ -145,24 +149,55 @@ class _CompressPageState extends State<CompressPage> {
       setState(() => _loading = false);
       return;
     }
-    await _scan();
+    // Tampilkan daftar terakhir dulu, lalu perbarui diam-diam.
+    final cached = await GalleryCache.read(_job.cacheKey);
+    if (!mounted) return;
+    if (cached != null) {
+      setState(() {
+        _photos = cached;
+        _loading = false;
+      });
+    }
+    await _scan(background: cached != null);
   }
 
-  Future<void> _scan() async {
+  /// [background]: daftar lama tetap tampil selama memindai (hanya bar tipis di atas).
+  Future<void> _scan({bool background = false}) async {
+    if (!mounted) return;
     setState(() {
-      _loading = true;
+      if (background) {
+        _refreshing = true;
+      } else {
+        _loading = true;
+      }
       _error = null;
     });
     try {
       final list = await _job.scan();
+      GalleryCache.write(_job.cacheKey, list);
+      if (!mounted) return;
       setState(() {
         _photos = list;
-        _selected.removeWhere((id) => !list.any((p) => p.id == id));
+        final ids = {for (final p in list) p.id};
+        _selected.removeWhere((id) => !ids.contains(id));
       });
     } catch (e) {
-      setState(() => _error = '$e');
+      if (!mounted) return;
+      if (background && _photos.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text('Gagal memperbarui daftar foto: $e'),
+        ));
+      } else {
+        setState(() => _error = '$e');
+      }
     } finally {
-      setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _refreshing = false;
+        });
+      }
     }
   }
 
@@ -390,8 +425,18 @@ class _CompressPageState extends State<CompressPage> {
               icon: Icon(allSelected ? Icons.deselect : Icons.select_all),
               onPressed: _toggleAll,
             ),
-          IconButton(tooltip: 'Muat ulang', icon: const Icon(Icons.refresh), onPressed: _loading ? null : _scan),
+          IconButton(
+            tooltip: 'Muat ulang',
+            icon: const Icon(Icons.refresh),
+            onPressed: _loading || _refreshing ? null : () => _scan(background: _photos.isNotEmpty),
+          ),
         ],
+        bottom: _refreshing
+            ? const PreferredSize(
+                preferredSize: Size.fromHeight(2),
+                child: LinearProgressIndicator(key: ValueKey('refreshing'), minHeight: 2),
+              )
+            : null,
       ),
       body: _body(photos),
       bottomNavigationBar: _loading || photos.isEmpty ? null : _bottomBar(),

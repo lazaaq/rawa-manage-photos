@@ -89,4 +89,7 @@ extension PhotoJobText on PhotoJob {
   OutputFormat get defaultFormat => this == PhotoJob.convert ? OutputFormat.jpeg : OutputFormat.same;
 
   Future<List<RawPhoto>> scan() => this == PhotoJob.raw ? RawNative.scanRaw() : RawNative.scanImages();
+
+  /// Kunci [GalleryCache]: Kompres Foto dan Ubah Format memakai daftar yang sama.
+  String get cacheKey => this == PhotoJob.raw ? 'raw' : 'images';
 }

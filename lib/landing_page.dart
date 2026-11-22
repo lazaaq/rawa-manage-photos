@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'compress_page.dart';
+import 'duplicate_page.dart';
 import 'jobs.dart';
 import 'sort_page.dart';
 
@@ -20,6 +21,7 @@ final kFeatures = <Feature>[
       () => const CompressPage(job: PhotoJob.compress)),
   Feature('Ubah Format', Icons.transform, Colors.purple, () => const CompressPage(job: PhotoJob.convert)),
   Feature('Sortir Foto', Icons.swipe, Colors.deepOrange, () => const SortPage()),
+  Feature('Cari Duplikat', Icons.copy_all, Colors.blue, () => const DuplicatePage()),
 ];
 
 /// Beranda: ikon kecil berjajar untuk setiap fitur.

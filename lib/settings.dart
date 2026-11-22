@@ -83,3 +83,46 @@ class SortProgress {
     } catch (_) {}
   }
 }
+
+/// Hash foto (Cari Duplikat) yang sudah dihitung: id -> (hash, detik diubah). Pemindaian
+/// berikutnya hanya menghitung foto baru atau yang berubah.
+class DupHashCache {
+  static const _key = 'dup.hashes';
+
+  static Future<Map<String, (int, int)>> load() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      final raw = p.getString(_key);
+      if (raw == null) return {};
+      final out = <String, (int, int)>{};
+      for (final line in raw.split('\n')) {
+        final parts = line.split('\t');
+        if (parts.length != 3) continue;
+        final h = int.tryParse(parts[1]);
+        final m = int.tryParse(parts[2]);
+        if (h != null && m != null) out[parts[0]] = (h, m);
+      }
+      return out;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  /// Hanya id di [entries] yang disimpan: foto yang sudah dihapus ikut terbuang.
+  static Future<void> save(Map<String, (int, int)> entries) async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      final b = StringBuffer();
+      for (final e in entries.entries) {
+        if (b.isNotEmpty) b.write('\n');
+        b
+          ..write(e.key)
+          ..write('\t')
+          ..write(e.value.$1)
+          ..write('\t')
+          ..write(e.value.$2);
+      }
+      await p.setString(_key, b.toString());
+    } catch (_) {}
+  }
+}

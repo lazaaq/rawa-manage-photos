@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 
+import 'gallery_cache.dart';
 import 'native.dart';
 import 'settings.dart';
 import 'swipe_card.dart';
@@ -123,8 +124,11 @@ class GallerySortSource implements SortSource {
   }
 
   @override
-  Future<List<String>> delete(List<String> ids) async =>
-      await RawNative.deleteLegacy(ids) ?? await PhotoManager.editor.deleteWithIds(ids);
+  Future<List<String>> delete(List<String> ids) async {
+    final deleted = await RawNative.deleteLegacy(ids) ?? await PhotoManager.editor.deleteWithIds(ids);
+    await GalleryCache.remove(deleted);
+    return deleted;
+  }
 
   @override
   Widget image(SortPhoto photo, {required bool large}) {
